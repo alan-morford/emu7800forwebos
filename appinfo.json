@@ -1,0 +1,10 @@
+{
+	"id": "com.emu7800.touchpad",
+	"version": "1.6.2",
+	"vendor": "EMU7800",
+	"type": "pdk",
+	"main": "emu7800.arm",
+	"title": "EMU7800",
+	"icon": "icon.png",
+	"requiredMemory": 32
+}

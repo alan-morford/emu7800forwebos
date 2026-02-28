@@ -1,0 +1,22 @@
+# Build artifacts
+*.o
+*.d
+plugin/emu7800.arm
+
+# Compiled binary (root copy for packaging)
+emu7800.arm
+
+# Packaged IPK files
+*.ipk
+
+# ROM files
+*.a26
+*.a78
+*.bin
+*.rom
+
+# Editor/IDE files
+*.swp
+*.swo
+*~
+.vscode/
