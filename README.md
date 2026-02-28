@@ -1,2 +1,1 @@
-# emu7800forwebos
-A port of EMU7800 for the HP TouchPad
+This 100% Claude.ai vibe-coded project is a port of EMU7800 which, for the first time, brings Atari 7800 gaming to your HP TouchPad. EMU7800 was developed by Atari enthusiast Mike Murphy. Originally released around 2003, the emulator is an open-source project (GNU GPLv2) designed for Windows and later adapted for other platforms, with active development continuing on GitHub. Portions of this port of EMU7800 also utilized open-source code from Stella version 7.0 (released in Oct 2024). Stella was originally developed for Linux by Bradford W. Mott and is now maintained and developed by Stephen Anthony and the Stella Team.
