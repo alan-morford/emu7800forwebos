@@ -43,9 +43,7 @@ extern void log_msg(const char *msg);
 
 /* UI layout */
 #define MARGIN_X      16
-#define TITLE_Y       30
-#define SUBTITLE_Y    70
-#define SEPARATOR_Y   100
+#define TITLE_Y       16
 #define LIST_TOP      120
 #define LIST_BOTTOM   (SCREEN_HEIGHT - 8)
 #define ITEM_HEIGHT   48
@@ -54,7 +52,7 @@ extern void log_msg(const char *msg);
 
 /* Resume button (top-left) */
 #define RESUME_X      MARGIN_X
-#define RESUME_Y      22
+#define RESUME_Y      16
 #define RESUME_H      40
 
 /* Asteroids launch image (right-aligned, bottom-aligned with list) */
@@ -1944,7 +1942,7 @@ void filepicker_draw(void)
                 strncat(basename, "...", MAX_NAME_LEN - 1 - max_chars);
             }
             font_draw_string(basename, name_x, RESUME_Y + 12, 2,
-                             1.0f, 0.5f, 0.15f, 0.8f);
+                             0.9f, 0.9f, 0.9f, 0.9f);
         }
     }
 

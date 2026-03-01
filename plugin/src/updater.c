@@ -22,7 +22,7 @@
 #include "updater.h"
 
 /* Must match appinfo.json version */
-#define APP_VERSION "1.6.2"
+#define APP_VERSION "1.6.3"
 
 /* App Museum II endpoint (plain HTTP, no SSL) */
 #define UPDATE_HOST "appcatalog.webosarchive.org"
