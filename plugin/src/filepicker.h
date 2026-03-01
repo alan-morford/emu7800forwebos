@@ -54,4 +54,11 @@ const char *filepicker_get_default_romdir(void);
 /* Save current settings to persistence file (called from in-game options popup) */
 void filepicker_save_settings(void);
 
+/* Handle keyboard input in filepicker state.
+ * Returns 1 if a ROM was selected (caller should launch). */
+int filepicker_key_down(int sym);
+
+/* Returns 1 if a keyboard was detected (persisted across sessions) */
+int filepicker_keyboard_detected(void);
+
 #endif /* FILEPICKER_H */

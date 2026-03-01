@@ -27,6 +27,7 @@
 #include "updater.h"
 #include "asteroids_img.h"
 #include "logo_img.h"
+#include "gear_img.h"
 /* External logging */
 extern void log_msg(const char *msg);
 
@@ -57,8 +58,8 @@ extern void log_msg(const char *msg);
 #define RESUME_H      40
 
 /* Asteroids launch image (right-aligned, bottom-aligned with list) */
-#define AST_BTN_W     240
-#define AST_BTN_H     240
+#define AST_BTN_W     180
+#define AST_BTN_H     180
 #define AST_BTN_X     (SCREEN_WIDTH - MARGIN_X - AST_BTN_W)
 #define AST_BTN_Y     (LIST_BOTTOM - AST_BTN_H)
 
@@ -77,7 +78,7 @@ extern void log_msg(const char *msg);
 #define LASTROM_FILE "/media/internal/.emu7800_lastrom"
 
 /* Recently played list */
-#define RECENT_MAX  10
+#define RECENT_MAX  9
 #define RECENT_FILE "/media/internal/.emu7800_recent"
 
 /* Popup layout */
@@ -119,6 +120,9 @@ static int g_art_selected = 0;
 
 /* Asteroids image GL texture */
 static GLuint g_ast_texture = 0;
+
+/* Gear icon GL texture */
+static GLuint g_gear_texture = 0;
 
 /* Animated logo background */
 static GLuint g_logo_texture = 0;
@@ -180,6 +184,9 @@ static int  g_dirpicker_touch_active = 0;
 static int  g_dirpicker_touch_start_y = 0;
 static float g_dirpicker_scroll_at_start = 0.0f;
 static int  g_dirpicker_touch_moved = 0;
+
+/* Keyboard detected (set on first keypress, cleared on touch) */
+static int g_keyboard_detected = 0;
 
 /* Touch tracking */
 static int g_touch_active = 0;
@@ -308,6 +315,8 @@ static void load_settings(void)
             input_set_autosave_ask(atoi(line + 13));
         } else if (strncmp(line, "control_dim=", 12) == 0) {
             input_set_control_dim(atoi(line + 12));
+        } else if (strncmp(line, "keyboard=", 9) == 0) {
+            g_keyboard_detected = atoi(line + 9);
         }
     }
     fclose(f);
@@ -330,6 +339,9 @@ static void save_settings(void)
     fprintf(f, "autosave=%d\n", input_get_autosave());
     fprintf(f, "autosave_ask=%d\n", input_get_autosave_ask());
     fprintf(f, "control_dim=%d\n", input_get_control_dim());
+    if (g_keyboard_detected) {
+        fprintf(f, "keyboard=1\n");
+    }
     fclose(f);
 }
 
@@ -516,6 +528,21 @@ void filepicker_init(void)
         glBindTexture(GL_TEXTURE_2D, 0);
     }
 
+    /* Create gear icon texture (RGBA for transparency) */
+    if (g_gear_texture == 0) {
+        glGenTextures(1, &g_gear_texture);
+        glBindTexture(GL_TEXTURE_2D, g_gear_texture);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
+                     GEAR_TEX_SIZE, GEAR_TEX_SIZE, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE,
+                     gear_img_data);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
     /* Create animated logo texture */
     if (g_logo_texture == 0) {
         glGenTextures(1, &g_logo_texture);
@@ -545,6 +572,10 @@ void filepicker_shutdown(void)
     if (g_logo_texture) {
         glDeleteTextures(1, &g_logo_texture);
         g_logo_texture = 0;
+    }
+    if (g_gear_texture) {
+        glDeleteTextures(1, &g_gear_texture);
+        g_gear_texture = 0;
     }
     g_file_count = 0;
 }
@@ -794,14 +825,14 @@ static void draw_update_popup(void)
 
     /* Orange outline */
     draw_rect_outline(popup_x, popup_y, UPDATE_POPUP_W, popup_h,
-                      1.0f, 0.6f, 0.2f, 0.8f);
+                      1.0f, 0.5f, 0.15f, 0.8f);
 
     /* Title: "Update Available: v1.6.0" */
     snprintf(title, sizeof(title), "Update Available: v%s", updater_get_version());
     text_y = popup_y + POPUP_PAD;
     tw = font_string_width(title, 2);
     font_draw_string(title, popup_x + (UPDATE_POPUP_W - tw) / 2, text_y, 2,
-                     1.0f, 0.6f, 0.2f, 1.0f);
+                     1.0f, 0.5f, 0.15f, 1.0f);
 
     /* Version note lines (grey, left-aligned with padding) */
     {
@@ -825,24 +856,24 @@ static void draw_update_popup(void)
 
         glDisable(GL_TEXTURE_2D);
 
-        /* UPDATE button (orange) */
-        draw_rect(bx, by, btn_w, RESUME_H, 1.0f, 0.6f, 0.2f, 0.8f);
+        /* UPDATE button (grey bg, orange text) */
+        draw_rect(bx, by, btn_w, RESUME_H, 0.3f, 0.3f, 0.3f, 0.6f);
         tw = font_string_width("UPDATE", 2);
         font_draw_string("UPDATE", bx + (btn_w - tw) / 2, by + 12, 2,
-                         1.0f, 1.0f, 1.0f, 0.9f);
+                         1.0f, 0.5f, 0.15f, 1.0f);
         bx += btn_w + gap;
 
-        /* LATER button (grey) */
-        draw_rect(bx, by, btn_w, RESUME_H, 0.4f, 0.4f, 0.4f, 0.8f);
+        /* LATER button (grey bg, orange text) */
+        draw_rect(bx, by, btn_w, RESUME_H, 0.3f, 0.3f, 0.3f, 0.6f);
         tw = font_string_width("LATER", 2);
         font_draw_string("LATER", bx + (btn_w - tw) / 2, by + 12, 2,
-                         1.0f, 1.0f, 1.0f, 0.9f);
+                         1.0f, 0.5f, 0.15f, 1.0f);
     }
 }
 
 /* Directory ask popup dimensions */
 #define DIRASK_W  600
-#define DIRASK_H  100
+#define DIRASK_H  120
 
 /* Draw the "Set a default ROM directory?" popup */
 static void draw_dirask_popup(void)
@@ -867,45 +898,42 @@ static void draw_dirask_popup(void)
 
     /* Orange outline */
     draw_rect_outline(popup_x, popup_y, DIRASK_W, DIRASK_H,
-                      1.0f, 0.6f, 0.2f, 0.8f);
+                      1.0f, 0.5f, 0.15f, 0.8f);
 
-    /* Title */
+    /* Two lines of text */
     text_y = popup_y + POPUP_PAD;
-    tw = font_string_width("Set a default ROM directory?", 2);
-    font_draw_string("Set a default ROM directory?",
+    tw = font_string_width("Set a default ROM directory now?", 2);
+    font_draw_string("Set a default ROM directory now?",
                      popup_x + (DIRASK_W - tw) / 2, text_y, 2,
-                     1.0f, 0.6f, 0.2f, 0.8f);
+                     1.0f, 0.5f, 0.15f, 0.8f);
+    text_y += 20;
+    tw = font_string_width("You can do this later in Settings.", 2);
+    font_draw_string("You can do this later in Settings.",
+                     popup_x + (DIRASK_W - tw) / 2, text_y, 2,
+                     0.6f, 0.6f, 0.6f, 0.8f);
 
-    /* Three equal-width buttons: Yes | Never | Later */
+    /* Two buttons: Yes | Later */
     {
         int w1 = font_string_width("Yes", 2) + 16;
-        int w2 = font_string_width("Never", 2) + 16;
-        int w3 = font_string_width("Later", 2) + 16;
+        int w2 = font_string_width("Later", 2) + 16;
         int btn_w = w1 > w2 ? w1 : w2;
-        if (w3 > btn_w) btn_w = w3;
         gap = 16;
-        total_w = btn_w * 3 + gap * 2;
+        total_w = btn_w * 2 + gap;
         bx = popup_x + (DIRASK_W - total_w) / 2;
         by = popup_y + DIRASK_H - POPUP_PAD - RESUME_H;
 
         glDisable(GL_TEXTURE_2D);
 
         /* Yes */
-        draw_rect(bx, by, btn_w, RESUME_H, 1.0f, 0.6f, 0.2f, 0.8f);
+        draw_rect(bx, by, btn_w, RESUME_H, 0.3f, 0.3f, 0.3f, 0.6f);
         tw = font_string_width("Yes", 2);
-        font_draw_string("Yes", bx + (btn_w - tw) / 2, by + 12, 2, 1.0f, 1.0f, 1.0f, 0.9f);
-        bx += btn_w + gap;
-
-        /* Never */
-        draw_rect(bx, by, btn_w, RESUME_H, 1.0f, 0.6f, 0.2f, 0.8f);
-        tw = font_string_width("Never", 2);
-        font_draw_string("Never", bx + (btn_w - tw) / 2, by + 12, 2, 1.0f, 1.0f, 1.0f, 0.9f);
+        font_draw_string("Yes", bx + (btn_w - tw) / 2, by + 12, 2, 1.0f, 0.5f, 0.15f, 1.0f);
         bx += btn_w + gap;
 
         /* Later */
-        draw_rect(bx, by, btn_w, RESUME_H, 1.0f, 0.6f, 0.2f, 0.8f);
+        draw_rect(bx, by, btn_w, RESUME_H, 0.3f, 0.3f, 0.3f, 0.6f);
         tw = font_string_width("Later", 2);
-        font_draw_string("Later", bx + (btn_w - tw) / 2, by + 12, 2, 1.0f, 1.0f, 1.0f, 0.9f);
+        font_draw_string("Later", bx + (btn_w - tw) / 2, by + 12, 2, 1.0f, 0.5f, 0.15f, 1.0f);
     }
 }
 
@@ -914,7 +942,8 @@ static void draw_dirask_popup(void)
 #define DIRPICKER_VISIBLE  8
 #define DIRPICKER_ITEM_H   40
 #define DIRPICKER_LIST_H   (DIRPICKER_VISIBLE * DIRPICKER_ITEM_H)
-#define DIRPICKER_H        (POPUP_PAD + POPUP_TITLE_H + 4 + 20 + 8 + DIRPICKER_LIST_H + 12 + RESUME_H + POPUP_PAD)
+#define DIRPICKER_TITLE_H  28  /* scale 3 title height */
+#define DIRPICKER_H        (POPUP_PAD + DIRPICKER_TITLE_H + 8 + DIRPICKER_LIST_H + 12 + RESUME_H + POPUP_PAD)
 
 /* Draw the directory picker popup */
 static void draw_dirpicker_popup(void)
@@ -942,42 +971,19 @@ static void draw_dirpicker_popup(void)
 
     /* Orange outline */
     draw_rect_outline(popup_x, popup_y, DIRPICKER_W, DIRPICKER_H,
-                      1.0f, 0.6f, 0.2f, 0.8f);
+                      1.0f, 0.5f, 0.15f, 0.8f);
 
     /* Title */
     text_y = popup_y + POPUP_PAD;
-    tw = font_string_width("Choose ROM Directory", 2);
+    tw = font_string_width("Choose ROM Directory", 3);
     font_draw_string("Choose ROM Directory",
-                     popup_x + (DIRPICKER_W - tw) / 2, text_y, 2,
-                     1.0f, 0.6f, 0.2f, 0.8f);
+                     popup_x + (DIRPICKER_W - tw) / 2, text_y, 3,
+                     1.0f, 0.5f, 0.15f, 1.0f);
 
-    /* Current path (grey, left-truncated if too long) */
-    text_y += POPUP_TITLE_H + 4;
     max_text_w = DIRPICKER_W - 2 * POPUP_PAD;
-    {
-        char pathdisp[MAX_PATH_LEN];
-        int pw;
-        strncpy(pathdisp, g_dirpicker_current, MAX_PATH_LEN - 1);
-        pathdisp[MAX_PATH_LEN - 1] = '\0';
-        pw = font_string_width(pathdisp, 2);
-        if (pw > max_text_w) {
-            /* Left-truncate: find a point where "..." + remainder fits */
-            int dots_w = font_string_width("...", 2);
-            int max_chars = (max_text_w - dots_w) / (8 * 2);
-            int plen = strlen(pathdisp);
-            if (max_chars > 0 && max_chars < plen) {
-                char trunc[MAX_PATH_LEN];
-                snprintf(trunc, sizeof(trunc), "...%s", pathdisp + plen - max_chars);
-                strncpy(pathdisp, trunc, MAX_PATH_LEN - 1);
-                pathdisp[MAX_PATH_LEN - 1] = '\0';
-            }
-        }
-        font_draw_string(pathdisp, popup_x + POPUP_PAD, text_y, 2,
-                         0.6f, 0.6f, 0.6f, 0.8f);
-    }
 
     /* Directory list area */
-    list_y = text_y + 20 + 8;
+    list_y = text_y + DIRPICKER_TITLE_H + 8;
 
     /* Clamp scroll */
     visible_height = DIRPICKER_LIST_H;
@@ -1027,7 +1033,7 @@ static void draw_dirpicker_popup(void)
             } else {
                 font_draw_string(disp, popup_x + POPUP_PAD,
                                  (int)(iy + (DIRPICKER_ITEM_H - 16) / 2), 2,
-                                 1.0f, 0.6f, 0.2f, 0.8f);
+                                 1.0f, 0.5f, 0.15f, 0.8f);
             }
         }
     }
@@ -1050,7 +1056,7 @@ static void draw_dirpicker_popup(void)
                   0.3f, 0.3f, 0.3f, 0.4f);
         /* Thumb */
         draw_rect(sb_x, thumb_y, sb_w, thumb_h,
-                  1.0f, 0.6f, 0.2f, 0.6f);
+                  1.0f, 0.5f, 0.15f, 0.6f);
     }
 
     /* Centered Set button */
@@ -1060,9 +1066,9 @@ static void draw_dirpicker_popup(void)
 
     glDisable(GL_TEXTURE_2D);
 
-    draw_rect(bx, by, set_w, RESUME_H, 1.0f, 0.6f, 0.2f, 0.8f);
+    draw_rect(bx, by, set_w, RESUME_H, 0.3f, 0.3f, 0.3f, 0.6f);
     tw = font_string_width("Set", 2);
-    font_draw_string("Set", bx + (set_w - tw) / 2, by + 12, 2, 1.0f, 1.0f, 1.0f, 0.9f);
+    font_draw_string("Set", bx + (set_w - tw) / 2, by + 12, 2, 1.0f, 0.5f, 0.15f, 1.0f);
 }
 
 /* Draw the recently played popup overlay */
@@ -1075,11 +1081,14 @@ static void draw_recent_popup(void)
 
     if (!g_recent_popup_visible || g_recent_count == 0) return;
 
-    popup_h = POPUP_PAD + POPUP_TITLE_H + POPUP_GAP
-            + g_recent_count * POPUP_ITEM_H
-            + POPUP_GAP + POPUP_BTN_H + POPUP_PAD;
-    popup_x = (SCREEN_WIDTH - POPUP_W) / 2;
-    popup_y = (SCREEN_HEIGHT - popup_h) / 2;
+    {
+        int recent_title_h = 28;  /* scale 3 title height */
+        popup_h = POPUP_PAD + recent_title_h + POPUP_GAP
+                + g_recent_count * POPUP_ITEM_H
+                + POPUP_GAP + POPUP_BTN_H + POPUP_PAD;
+        popup_x = (SCREEN_WIDTH - POPUP_W) / 2;
+        popup_y = (SCREEN_HEIGHT - popup_h) / 2;
+    }
 
     glDisable(GL_TEXTURE_2D);
     glEnable(GL_BLEND);
@@ -1092,22 +1101,23 @@ static void draw_recent_popup(void)
 
     /* Orange outline */
     draw_rect_outline(popup_x, popup_y, POPUP_W, popup_h,
-                      1.0f, 0.6f, 0.2f, 0.8f);
+                      1.0f, 0.5f, 0.15f, 0.8f);
 
-    /* Title "Recently Played" centered */
-    title_w = font_string_width("Recently Played", 2);
+    /* Title "Recently Played" centered, scale 3 */
+    title_w = font_string_width("Recently Played", 3);
     font_draw_string("Recently Played",
                      popup_x + (POPUP_W - title_w) / 2,
-                     popup_y + POPUP_PAD, 2,
-                     1.0f, 0.6f, 0.2f, 0.8f);
+                     popup_y + POPUP_PAD, 3,
+                     1.0f, 0.5f, 0.15f, 1.0f);
 
     /* Item list */
-    items_y = popup_y + POPUP_PAD + POPUP_TITLE_H + POPUP_GAP;
+    items_y = popup_y + POPUP_PAD + 28 + POPUP_GAP;
     max_text_w = POPUP_W - 2 * POPUP_PAD;
 
     for (i = 0; i < g_recent_count; i++) {
         int iy = items_y + i * POPUP_ITEM_H;
         char basename[MAX_NAME_LEN];
+        char numbered[MAX_NAME_LEN + 4];
         const char *slash, *dot;
         int tw;
 
@@ -1118,34 +1128,40 @@ static void draw_recent_popup(void)
         dot = strrchr(basename, '.');
         if (dot) basename[dot - basename] = '\0';
 
+        /* Prefix with number */
+        snprintf(numbered, sizeof(numbered), "%d. %s", i + 1, basename);
+
         /* Truncate with "..." if too wide */
-        tw = font_string_width(basename, 2);
+        tw = font_string_width(numbered, 2);
         if (tw > max_text_w) {
             int dots_w = font_string_width("...", 2);
             int max_chars = (max_text_w - dots_w) / (8 * 2);
             if (max_chars < 0) max_chars = 0;
-            basename[max_chars] = '\0';
-            strncat(basename, "...", MAX_NAME_LEN - 1 - max_chars);
+            numbered[max_chars] = '\0';
+            strncat(numbered, "...", sizeof(numbered) - 1 - max_chars);
         }
 
-        font_draw_string(basename,
+        font_draw_string(numbered,
                          popup_x + POPUP_PAD,
                          iy + (POPUP_ITEM_H - 16) / 2, 2,
-                         1.0f, 0.6f, 0.2f, 0.8f);
+                         0.9f, 0.9f, 0.9f, 0.9f);
     }
 
-    /* "Clear List" button at bottom-right */
+    /* "Clear List" button centered at bottom */
     btn_w = font_string_width("Clear List", 2) + 16;
-    btn_x = popup_x + POPUP_W - POPUP_PAD - btn_w;
+    btn_x = popup_x + (POPUP_W - btn_w) / 2;
     btn_y = popup_y + popup_h - POPUP_PAD - POPUP_BTN_H;
 
     glDisable(GL_TEXTURE_2D);
     draw_rect(btn_x, btn_y, btn_w, POPUP_BTN_H,
-              1.0f, 0.6f, 0.2f, 0.8f);
-    font_draw_string("Clear List",
-                     btn_x + 8,
-                     btn_y + (POPUP_BTN_H - 16) / 2, 2,
-                     1.0f, 1.0f, 1.0f, 0.9f);
+              0.3f, 0.3f, 0.3f, 0.6f);
+    {
+        int clr_tw = font_string_width("Clear List", 2);
+        font_draw_string("Clear List",
+                         btn_x + (btn_w - clr_tw) / 2,
+                         btn_y + (POPUP_BTN_H - 16) / 2, 2,
+                         1.0f, 0.5f, 0.15f, 1.0f);
+    }
 }
 
 /* Settings popup layout */
@@ -1184,7 +1200,7 @@ static void draw_settings_popup(void)
 
     /* Orange outline */
     draw_rect_outline(popup_x, popup_y, SETTINGS_POPUP_W, SETTINGS_POPUP_H,
-                      1.0f, 0.6f, 0.2f, 0.8f);
+                      1.0f, 0.5f, 0.15f, 0.8f);
 
     /* Title "Settings" centered */
     text_y = popup_y + POPUP_PAD;
@@ -1390,10 +1406,11 @@ static void draw_settings_popup(void)
 
 /* About popup dimensions (content is fixed) */
 #define ABOUT_W         800
+#define ABOUT_TITLE_H   28  /* scale 3 title height */
 #define ABOUT_LINES     8
 #define ABOUT_GAPS      3
 #define ABOUT_CONTENT_H (ABOUT_LINES * 20 + ABOUT_GAPS * 8)
-#define ABOUT_H         (POPUP_PAD + ABOUT_CONTENT_H + POPUP_PAD)
+#define ABOUT_H         (POPUP_PAD + ABOUT_TITLE_H + POPUP_PAD + ABOUT_CONTENT_H + POPUP_PAD)
 
 /* Draw the about popup overlay */
 static void draw_about_popup(void)
@@ -1431,10 +1448,19 @@ static void draw_about_popup(void)
 
     /* Orange outline */
     draw_rect_outline(popup_x, popup_y, ABOUT_W, ABOUT_H,
-                      1.0f, 0.6f, 0.2f, 0.8f);
+                      1.0f, 0.5f, 0.15f, 0.8f);
 
-    /* Text lines */
+    /* Title */
     text_y = popup_y + POPUP_PAD;
+    {
+        int tw = font_string_width("About", 3);
+        font_draw_string("About",
+                         popup_x + (ABOUT_W - tw) / 2, text_y, 3,
+                         1.0f, 0.5f, 0.15f, 1.0f);
+    }
+
+    /* Body text (white) */
+    text_y += ABOUT_TITLE_H + POPUP_PAD;
     for (i = 0; lines[i] != NULL; i++) {
         if (lines[i][0] == '\0') {
             text_y += 8;  /* paragraph gap */
@@ -1442,7 +1468,7 @@ static void draw_about_popup(void)
             font_draw_string(lines[i],
                              popup_x + (ABOUT_W - font_string_width(lines[i], 2)) / 2,
                              text_y, 2,
-                             1.0f, 0.6f, 0.2f, 0.8f);
+                             0.9f, 0.9f, 0.9f, 0.9f);
             text_y += 20;
         }
     }
@@ -1476,19 +1502,19 @@ static void draw_save_popup(void)
 
     /* Orange outline */
     draw_rect_outline(popup_x, popup_y, SAVE_POPUP_W, SAVE_POPUP_H,
-                      1.0f, 0.6f, 0.2f, 0.8f);
+                      1.0f, 0.5f, 0.15f, 0.8f);
 
     /* Text: two centered lines */
     text_y = popup_y + POPUP_PAD;
     tw = font_string_width("Would you like to continue", 2);
     font_draw_string("Would you like to continue",
                      popup_x + (SAVE_POPUP_W - tw) / 2, text_y, 2,
-                     1.0f, 0.6f, 0.2f, 0.8f);
+                     1.0f, 0.5f, 0.15f, 0.8f);
     text_y += 20;
     tw = font_string_width("from your Save?", 2);
     font_draw_string("from your Save?",
                      popup_x + (SAVE_POPUP_W - tw) / 2, text_y, 2,
-                     1.0f, 0.6f, 0.2f, 0.8f);
+                     1.0f, 0.5f, 0.15f, 0.8f);
 
     /* Three equal-width buttons centered below text */
     {
@@ -1505,21 +1531,33 @@ static void draw_save_popup(void)
         glDisable(GL_TEXTURE_2D);
 
         /* Yes button */
-        draw_rect(bx, by, btn_w, RESUME_H, 1.0f, 0.6f, 0.2f, 0.8f);
+        draw_rect(bx, by, btn_w, RESUME_H, 0.3f, 0.3f, 0.3f, 0.6f);
         tw = font_string_width("Yes", 2);
-        font_draw_string("Yes", bx + (btn_w - tw) / 2, by + 12, 2, 1.0f, 1.0f, 1.0f, 0.9f);
+        font_draw_string("Yes", bx + (btn_w - tw) / 2, by + 12, 2, 1.0f, 0.5f, 0.15f, 1.0f);
+        if (g_keyboard_detected) {
+            tw = font_string_width("Y", 2);
+            font_draw_string("Y", bx + (btn_w - tw) / 2, by + 1, 2, 1.0f, 1.0f, 1.0f, 0.9f);
+        }
         bx += btn_w + gap;
 
         /* No button */
-        draw_rect(bx, by, btn_w, RESUME_H, 1.0f, 0.6f, 0.2f, 0.8f);
+        draw_rect(bx, by, btn_w, RESUME_H, 0.3f, 0.3f, 0.3f, 0.6f);
         tw = font_string_width("No", 2);
-        font_draw_string("No", bx + (btn_w - tw) / 2, by + 12, 2, 1.0f, 1.0f, 1.0f, 0.9f);
+        font_draw_string("No", bx + (btn_w - tw) / 2, by + 12, 2, 1.0f, 0.5f, 0.15f, 1.0f);
+        if (g_keyboard_detected) {
+            tw = font_string_width("N", 2);
+            font_draw_string("N", bx + (btn_w - tw) / 2, by + 1, 2, 1.0f, 1.0f, 1.0f, 0.9f);
+        }
         bx += btn_w + gap;
 
         /* Delete button */
-        draw_rect(bx, by, btn_w, RESUME_H, 1.0f, 0.6f, 0.2f, 0.8f);
+        draw_rect(bx, by, btn_w, RESUME_H, 0.3f, 0.3f, 0.3f, 0.6f);
         tw = font_string_width("Delete", 2);
-        font_draw_string("Delete", bx + (btn_w - tw) / 2, by + 12, 2, 1.0f, 1.0f, 1.0f, 0.9f);
+        font_draw_string("Delete", bx + (btn_w - tw) / 2, by + 12, 2, 0.8f, 0.1f, 0.1f, 1.0f);
+        if (g_keyboard_detected) {
+            tw = font_string_width("D", 2);
+            font_draw_string("D", bx + (btn_w - tw) / 2, by + 1, 2, 1.0f, 1.0f, 1.0f, 0.9f);
+        }
     }
 }
 
@@ -1546,19 +1584,19 @@ static void draw_delete_confirm_popup(void)
 
     /* Orange outline */
     draw_rect_outline(popup_x, popup_y, SAVE_POPUP_W, SAVE_POPUP_H,
-                      1.0f, 0.6f, 0.2f, 0.8f);
+                      1.0f, 0.5f, 0.15f, 0.8f);
 
     /* Text: two centered lines */
     text_y = popup_y + POPUP_PAD;
     tw = font_string_width("Are you sure you want to", 2);
     font_draw_string("Are you sure you want to",
                      popup_x + (SAVE_POPUP_W - tw) / 2, text_y, 2,
-                     1.0f, 0.6f, 0.2f, 0.8f);
+                     1.0f, 0.5f, 0.15f, 0.8f);
     text_y += 20;
     tw = font_string_width("delete the save file?", 2);
     font_draw_string("delete the save file?",
                      popup_x + (SAVE_POPUP_W - tw) / 2, text_y, 2,
-                     1.0f, 0.6f, 0.2f, 0.8f);
+                     1.0f, 0.5f, 0.15f, 0.8f);
 
     /* Two equal-width buttons centered below text */
     {
@@ -1573,15 +1611,15 @@ static void draw_delete_confirm_popup(void)
         glDisable(GL_TEXTURE_2D);
 
         /* Yes button */
-        draw_rect(bx, by, btn_w, RESUME_H, 1.0f, 0.6f, 0.2f, 0.8f);
+        draw_rect(bx, by, btn_w, RESUME_H, 0.3f, 0.3f, 0.3f, 0.6f);
         tw = font_string_width("Yes", 2);
-        font_draw_string("Yes", bx + (btn_w - tw) / 2, by + 12, 2, 1.0f, 1.0f, 1.0f, 0.9f);
+        font_draw_string("Yes", bx + (btn_w - tw) / 2, by + 12, 2, 1.0f, 0.5f, 0.15f, 1.0f);
         bx += btn_w + gap;
 
         /* No button */
-        draw_rect(bx, by, btn_w, RESUME_H, 1.0f, 0.6f, 0.2f, 0.8f);
+        draw_rect(bx, by, btn_w, RESUME_H, 0.3f, 0.3f, 0.3f, 0.6f);
         tw = font_string_width("No", 2);
-        font_draw_string("No", bx + (btn_w - tw) / 2, by + 12, 2, 1.0f, 1.0f, 1.0f, 0.9f);
+        font_draw_string("No", bx + (btn_w - tw) / 2, by + 12, 2, 1.0f, 0.5f, 0.15f, 1.0f);
     }
 }
 
@@ -1669,7 +1707,7 @@ static void draw_fp_aswarn_popup(void)
 
     /* Box with orange border */
     draw_rect(popup_x - 1, popup_y - 1, FP_ASWARN_W + 2, FP_ASWARN_H + 2,
-              1.0f, 0.6f, 0.2f, 1.0f);
+              1.0f, 0.5f, 0.15f, 1.0f);
     draw_rect(popup_x, popup_y, FP_ASWARN_W, FP_ASWARN_H,
               0.0f, 0.0f, 0.0f, 0.95f);
 
@@ -1678,13 +1716,13 @@ static void draw_fp_aswarn_popup(void)
     for (i = 0; warn_lines[i] != NULL; i++) {
         tw = font_string_width(warn_lines[i], 2);
         font_draw_string(warn_lines[i], popup_x + (FP_ASWARN_W - tw) / 2,
-                         text_y, 2, 1.0f, 0.6f, 0.2f, 0.8f);
+                         text_y, 2, 1.0f, 0.5f, 0.15f, 0.8f);
         text_y += 18;
     }
     /* Last line (dynamic) */
     tw = font_string_width(last_line, 2);
     font_draw_string(last_line, popup_x + (FP_ASWARN_W - tw) / 2,
-                     text_y, 2, 1.0f, 0.6f, 0.2f, 0.8f);
+                     text_y, 2, 1.0f, 0.5f, 0.15f, 0.8f);
 
     /* Yes / No buttons */
     btn_cy = popup_y + FP_ASWARN_H - FP_ASWARN_BTN_H - 16;
@@ -1693,7 +1731,7 @@ static void draw_fp_aswarn_popup(void)
 
     /* Yes */
     draw_rect(yes_x, btn_cy, FP_ASWARN_BTN_W, FP_ASWARN_BTN_H,
-              1.0f, 0.6f, 0.2f, 0.8f);
+              1.0f, 0.5f, 0.15f, 0.8f);
     tw = font_string_width("Yes", 2);
     font_draw_string("Yes", yes_x + (FP_ASWARN_BTN_W - tw) / 2,
                      btn_cy + 8, 2, 1.0f, 1.0f, 1.0f, 0.9f);
@@ -1703,7 +1741,7 @@ static void draw_fp_aswarn_popup(void)
               0.3f, 0.3f, 0.3f, 0.8f);
     tw = font_string_width("No", 2);
     font_draw_string("No", no_x + (FP_ASWARN_BTN_W - tw) / 2,
-                     btn_cy + 8, 2, 1.0f, 0.6f, 0.2f, 0.8f);
+                     btn_cy + 8, 2, 1.0f, 0.5f, 0.15f, 0.8f);
 }
 
 /* Draw the file picker UI */
@@ -1809,13 +1847,37 @@ void filepicker_draw(void)
         }
     }
 
-    /* "Settings" text link (right-aligned under title, grey text) */
+    /* Gear icon (right-aligned under title, replaces "Settings" text) */
     {
-        int settings_w = font_string_width("Settings", 2);
-        int settings_x = SCREEN_WIDTH - MARGIN_X - settings_w;
-        int settings_y = TITLE_Y + 5 * 8 + 4;  /* below scale-5 title */
-        font_draw_string("Settings", settings_x, settings_y, 2,
-                         0.6f, 0.6f, 0.6f, 1.0f);
+        int gear_x = SCREEN_WIDTH - MARGIN_X - GEAR_IMG_W;
+        int gear_y = TITLE_Y + 5 * 8 + 2;  /* just below scale-5 title */
+        float u_max = (float)GEAR_IMG_W / GEAR_TEX_SIZE;
+        float v_max = (float)GEAR_IMG_H / GEAR_TEX_SIZE;
+        GLfloat gverts[8], gtc[8];
+
+        gverts[0] = gear_x;                gverts[1] = gear_y;
+        gverts[2] = gear_x + GEAR_IMG_W;   gverts[3] = gear_y;
+        gverts[4] = gear_x;                gverts[5] = gear_y + GEAR_IMG_H;
+        gverts[6] = gear_x + GEAR_IMG_W;   gverts[7] = gear_y + GEAR_IMG_H;
+
+        gtc[0] = 0;      gtc[1] = 0;
+        gtc[2] = u_max;  gtc[3] = 0;
+        gtc[4] = 0;      gtc[5] = v_max;
+        gtc[6] = u_max;  gtc[7] = v_max;
+
+        glEnable(GL_TEXTURE_2D);
+        glEnable(GL_BLEND);
+        glBindTexture(GL_TEXTURE_2D, g_gear_texture);
+        glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+        glEnableClientState(GL_VERTEX_ARRAY);
+        glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+        glVertexPointer(2, GL_FLOAT, 0, gverts);
+        glTexCoordPointer(2, GL_FLOAT, 0, gtc);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+        glDisableClientState(GL_VERTEX_ARRAY);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glDisable(GL_TEXTURE_2D);
     }
 
     /* Auto-show update popup once when update is found */
@@ -1824,11 +1886,13 @@ void filepicker_draw(void)
         g_update_popup_visible = 1;
     }
 
-    /* "Update!" text link (right-aligned below Settings, green — only after LATER) */
+    /* "Update!" text link (to the left of gear icon — only after LATER) */
     if (updater_has_update() && g_update_later) {
+        int gear_x = SCREEN_WIDTH - MARGIN_X - GEAR_IMG_W;
+        int gear_y = TITLE_Y + 5 * 8 + 2;
         int update_w = font_string_width("Update!", 2);
-        int update_x = SCREEN_WIDTH - MARGIN_X - update_w;
-        int update_y = TITLE_Y + 5 * 8 + 4 + 16 + 4;  /* below Settings text */
+        int update_x = gear_x - 4 - update_w;
+        int update_y = gear_y + (GEAR_IMG_H - 16) / 2;  /* vertically centered with gear */
         font_draw_string("Update!", update_x, update_y, 2,
                          1.0f, 0.5f, 0.15f, 1.0f);
     }
@@ -1846,10 +1910,15 @@ void filepicker_draw(void)
 
         glDisable(GL_TEXTURE_2D);
         draw_rect(RESUME_X, RESUME_Y, btn_w, RESUME_H,
-                  1.0f, 0.6f, 0.2f, 0.8f);
+                  0.3f, 0.3f, 0.3f, 0.6f);
 
         font_draw_string("RESUME", RESUME_X + 8, RESUME_Y + 12, 2,
-                         1.0f, 1.0f, 1.0f, 0.9f);
+                         1.0f, 0.5f, 0.15f, 1.0f);
+        if (g_keyboard_detected) {
+            int kw = font_string_width("1", 2);
+            font_draw_string("1", RESUME_X + (btn_w - kw) / 2, RESUME_Y + 1, 2,
+                             1.0f, 1.0f, 1.0f, 0.9f);
+        }
 
         /* Show ROM filename without extension to the right of button */
         slash = strrchr(g_last_rom_path, '/');
@@ -1875,7 +1944,7 @@ void filepicker_draw(void)
                 strncat(basename, "...", MAX_NAME_LEN - 1 - max_chars);
             }
             font_draw_string(basename, name_x, RESUME_Y + 12, 2,
-                             1.0f, 0.7f, 0.3f, 0.8f);
+                             1.0f, 0.5f, 0.15f, 0.8f);
         }
     }
 
@@ -1885,21 +1954,20 @@ void filepicker_draw(void)
         int btn_y = RESUME_Y + RESUME_H + 4;
         glDisable(GL_TEXTURE_2D);
         draw_rect(RESUME_X, btn_y, btn_w, RESUME_H,
-                  1.0f, 0.6f, 0.2f, 0.8f);
+                  0.3f, 0.3f, 0.3f, 0.6f);
         font_draw_string("RECENT", RESUME_X + 8, btn_y + 12, 2,
-                         1.0f, 1.0f, 1.0f, 0.9f);
+                         1.0f, 0.5f, 0.15f, 1.0f);
+        if (g_keyboard_detected) {
+            int kw = font_string_width("2", 2);
+            font_draw_string("2", RESUME_X + (btn_w - kw) / 2, btn_y + 1, 2,
+                             1.0f, 1.0f, 1.0f, 0.9f);
+        }
     }
 
-    /* Separator line (below Settings/Update text, or below RECENT button when visible) */
+    /* Separator line (below gear icon, or below RECENT button when visible) */
     {
-        int settings_bottom = TITLE_Y + 5 * 8 + 4 + 16;  /* Settings text bottom */
-        int sep_y;
-        if (updater_has_update() && g_update_later) {
-            /* Push separator below "Update!" text */
-            sep_y = TITLE_Y + 5 * 8 + 4 + 16 + 4 + 16 + 6;
-        } else {
-            sep_y = settings_bottom + 6;
-        }
+        int gear_bottom = TITLE_Y + 5 * 8 + 2 + GEAR_IMG_H;  /* gear icon bottom */
+        int sep_y = gear_bottom + 2;
         if (g_recent_count > 1) {
             int recent_bottom = RESUME_Y + RESUME_H + 4 + RESUME_H;
             if (recent_bottom + 6 > sep_y) sep_y = recent_bottom + 6;
@@ -1981,7 +2049,7 @@ void filepicker_draw(void)
 
             if (g_files[i].is_dir) {
                 font_draw_string(disp, MARGIN_X, item_y, 2,
-                                 1.0f, 0.6f, 0.2f, 1.0f);
+                                 1.0f, 0.5f, 0.15f, 1.0f);
             } else {
                 const char *ext = strrchr(g_files[i].name, '.');
                 if (ext && strcasecmp(ext, ".sav") == 0) {
@@ -2040,6 +2108,7 @@ void filepicker_draw(void)
 /* Touch down */
 void filepicker_touch_down(int x, int y)
 {
+    g_keyboard_detected = 0;
     g_touch_active = 1;
     g_touch_start_x = x;
     g_touch_start_y = y;
@@ -2163,7 +2232,7 @@ int filepicker_touch_up(int x, int y)
 
             /* List area */
             {
-                int text_y = popup_y + POPUP_PAD + POPUP_TITLE_H + 4 + 20 + 8;
+                int text_y = popup_y + POPUP_PAD + DIRPICKER_TITLE_H + 8;
                 int list_bottom = text_y + DIRPICKER_LIST_H;
 
                 if (y >= text_y && y < list_bottom && !g_dirpicker_touch_moved) {
@@ -2212,13 +2281,11 @@ int filepicker_touch_up(int x, int y)
             y >= popup_y && y < popup_y + DIRASK_H) {
             /* Check buttons (uniform width) */
             int w1 = font_string_width("Yes", 2) + 16;
-            int w2 = font_string_width("Never", 2) + 16;
-            int w3 = font_string_width("Later", 2) + 16;
+            int w2 = font_string_width("Later", 2) + 16;
             int btn_w = w1 > w2 ? w1 : w2;
             int gap = 16;
             int total_w, bx, by;
-            if (w3 > btn_w) btn_w = w3;
-            total_w = btn_w * 3 + gap * 2;
+            total_w = btn_w * 2 + gap;
             bx = popup_x + (DIRASK_W - total_w) / 2;
             by = popup_y + DIRASK_H - POPUP_PAD - RESUME_H;
 
@@ -2231,22 +2298,18 @@ int filepicker_touch_up(int x, int y)
                     return 0;
                 }
                 bx += btn_w + gap;
-                /* Never — persist choice */
+                /* Later — suppress future prompts */
                 if (x >= bx && x < bx + btn_w) {
                     g_romdir_prompt_never = 1;
                     save_settings();
                     g_dirask_popup_visible = 0;
                     return 0;
                 }
-                bx += btn_w + gap;
-                /* Later — just close */
-                if (x >= bx && x < bx + btn_w) {
-                    g_dirask_popup_visible = 0;
-                    return 0;
-                }
             }
         } else {
             /* Tap outside popup — same as Later */
+            g_romdir_prompt_never = 1;
+            save_settings();
             g_dirask_popup_visible = 0;
         }
         return 0;
@@ -2255,7 +2318,8 @@ int filepicker_touch_up(int x, int y)
     /* Handle recent popup touches (highest priority) */
     if (g_recent_popup_visible) {
         int popup_h, popup_x, popup_y;
-        popup_h = POPUP_PAD + POPUP_TITLE_H + POPUP_GAP
+        int recent_title_h = 28;  /* scale 3 title height */
+        popup_h = POPUP_PAD + recent_title_h + POPUP_GAP
                 + g_recent_count * POPUP_ITEM_H
                 + POPUP_GAP + POPUP_BTN_H + POPUP_PAD;
         popup_x = (SCREEN_WIDTH - POPUP_W) / 2;
@@ -2263,10 +2327,10 @@ int filepicker_touch_up(int x, int y)
 
         if (x >= popup_x && x < popup_x + POPUP_W &&
             y >= popup_y && y < popup_y + popup_h) {
-            /* Check "Clear List" button */
+            /* Check "Clear List" button (centered) */
             {
                 int clr_w = font_string_width("Clear List", 2) + 16;
-                int clr_x = popup_x + POPUP_W - POPUP_PAD - clr_w;
+                int clr_x = popup_x + (POPUP_W - clr_w) / 2;
                 int clr_y = popup_y + popup_h - POPUP_PAD - POPUP_BTN_H;
                 if (x >= clr_x && x < clr_x + clr_w &&
                     y >= clr_y && y < clr_y + POPUP_BTN_H) {
@@ -2278,7 +2342,7 @@ int filepicker_touch_up(int x, int y)
             }
             /* Check item taps */
             {
-                int items_y = popup_y + POPUP_PAD + POPUP_TITLE_H + POPUP_GAP;
+                int items_y = popup_y + POPUP_PAD + recent_title_h + POPUP_GAP;
                 if (y >= items_y && y < items_y + g_recent_count * POPUP_ITEM_H) {
                     int item_idx = (y - items_y) / POPUP_ITEM_H;
                     if (item_idx >= 0 && item_idx < g_recent_count) {
@@ -2566,25 +2630,25 @@ int filepicker_touch_up(int x, int y)
         }
     }
 
-    /* Check "Settings" text tap (right-aligned under title) */
+    /* Check gear icon tap (opens Settings popup) */
     {
-        int settings_w = font_string_width("Settings", 2);
-        int settings_h = 2 * 8;  /* scale 2 = 16px tall */
-        int settings_x = SCREEN_WIDTH - MARGIN_X - settings_w;
-        int settings_y = TITLE_Y + 5 * 8 + 4;
-        if (x >= settings_x && x < settings_x + settings_w &&
-            y >= settings_y && y < settings_y + settings_h) {
+        int gear_x = SCREEN_WIDTH - MARGIN_X - GEAR_IMG_W;
+        int gear_y = TITLE_Y + 5 * 8 + 2;
+        if (x >= gear_x && x < gear_x + GEAR_IMG_W &&
+            y >= gear_y && y < gear_y + GEAR_IMG_H) {
             g_settings_popup_visible = 1;
             return 0;
         }
     }
 
-    /* Check "Update!" text tap (right-aligned below Settings, only after LATER) */
+    /* Check "Update!" text tap (to the left of gear, only after LATER) */
     if (updater_has_update() && g_update_later) {
+        int gear_x = SCREEN_WIDTH - MARGIN_X - GEAR_IMG_W;
+        int gear_y = TITLE_Y + 5 * 8 + 2;
         int update_w = font_string_width("Update!", 2);
         int update_h = 2 * 8;
-        int update_x = SCREEN_WIDTH - MARGIN_X - update_w;
-        int update_y = TITLE_Y + 5 * 8 + 4 + 16 + 4;
+        int update_x = gear_x - 4 - update_w;
+        int update_y = gear_y + (GEAR_IMG_H - 16) / 2;
         if (x >= update_x && x < update_x + update_w &&
             y >= update_y && y < update_y + update_h) {
             g_update_popup_visible = 1;
@@ -2683,4 +2747,72 @@ const char *filepicker_get_default_romdir(void)
     if (g_default_romdir[0] == '\0') return NULL;
     if (stat(g_default_romdir, &st) != 0 || !S_ISDIR(st.st_mode)) return NULL;
     return g_default_romdir;
+}
+
+/* Handle keyboard input in filepicker state.
+ * Returns 1 if a ROM was selected (caller should launch). */
+int filepicker_key_down(int sym)
+{
+    if (!g_keyboard_detected) {
+        g_keyboard_detected = 1;
+        save_settings();
+    }
+
+    /* Save popup: Y/N/D */
+    if (g_save_popup_visible) {
+        if (sym == SDLK_y) {
+            return resolve_save_popup(1);
+        } else if (sym == SDLK_n) {
+            return resolve_save_popup(0);
+        } else if (sym == SDLK_d) {
+            g_save_popup_visible = 0;
+            g_delete_confirm_visible = 1;
+        }
+        return 0;
+    }
+
+    /* Recent popup: 1-9 selects item */
+    if (g_recent_popup_visible) {
+        if (sym >= SDLK_1 && sym <= SDLK_9) {
+            int idx = sym - SDLK_1;
+            if (idx < g_recent_count) {
+                strncpy(g_last_rom_path, g_recent_paths[idx], MAX_PATH_LEN - 1);
+                g_last_rom_path[MAX_PATH_LEN - 1] = '\0';
+                g_last_rom_type = g_recent_types[idx];
+                g_has_last_rom = 1;
+                g_resume_selected = 1;
+                g_art_selected = 0;
+                g_recent_popup_visible = 0;
+                return check_save_popup();
+            }
+        }
+        return 0;
+    }
+
+    /* Any other popup visible — ignore keys */
+    if (g_dirask_popup_visible || g_dirpicker_popup_visible ||
+        g_settings_popup_visible || g_about_popup_visible ||
+        g_delete_confirm_visible || g_fp_aswarn_visible ||
+        g_update_popup_visible) {
+        return 0;
+    }
+
+    /* Main filepicker screen: 1=Resume, 2=Recent */
+    if (sym == SDLK_1 && g_has_last_rom) {
+        g_resume_selected = 1;
+        g_art_selected = 0;
+        return check_save_popup();
+    }
+    if (sym == SDLK_2 && g_recent_count > 1) {
+        g_recent_popup_visible = 1;
+        return 0;
+    }
+
+    return 0;
+}
+
+/* Returns 1 if a keyboard was detected (persisted across sessions) */
+int filepicker_keyboard_detected(void)
+{
+    return g_keyboard_detected;
 }

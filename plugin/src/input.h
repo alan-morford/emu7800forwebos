@@ -54,6 +54,9 @@ void input_handle_key_up(int sdl_key);
 /* Returns 1 if keyboard was detected (labels should be shown) */
 int input_keyboard_active(void);
 
+/* Set keyboard active state (e.g. transferred from filepicker detection) */
+void input_set_keyboard_active(int active);
+
 /* Set whether a save file exists for the current ROM (affects LOAD button appearance) */
 void input_set_save_exists(int exists);
 

@@ -409,6 +409,11 @@ static void launch_selected_rom(void)
     /* Reset input state */
     input_init();
 
+    /* Transfer keyboard detection from filepicker to emulator */
+    if (filepicker_keyboard_detected()) {
+        input_set_keyboard_active(1);
+    }
+
     /* Check if save file exists for this ROM */
     input_set_save_exists(savestate_exists(path));
 
@@ -815,7 +820,11 @@ static uint64_t process_events(void)
                 break;
 
             case SDL_KEYDOWN:
-                if (g_app_state == APP_STATE_EMULATOR) {
+                if (g_app_state == APP_STATE_FILEPICKER) {
+                    if (filepicker_key_down(event.key.keysym.sym)) {
+                        launch_selected_rom();
+                    }
+                } else if (g_app_state == APP_STATE_EMULATOR) {
                     input_handle_key_down(event.key.keysym.sym);
                 }
                 events_processed++;

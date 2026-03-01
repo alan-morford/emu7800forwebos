@@ -99,12 +99,17 @@ typedef struct SDL_Rect {
 #define SDLK_4              52
 #define SDLK_5              53
 #define SDLK_6              54
+#define SDLK_7              55
+#define SDLK_8              56
+#define SDLK_9              57
 #define SDLK_a              97
 #define SDLK_d              100
 #define SDLK_j              106
 #define SDLK_k              107
+#define SDLK_n              110
 #define SDLK_s              115
 #define SDLK_w              119
+#define SDLK_y              121
 
 /* Keyboard event */
 typedef struct SDL_KeyboardEvent {

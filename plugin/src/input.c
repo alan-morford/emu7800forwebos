@@ -524,7 +524,7 @@ void input_draw_controls_gl(void)
     /* Draw Fire button (orange) */
     if (fire_pressed) {
         draw_circle_gl(FIRE_X + FIRE_SIZE/2, FIRE_Y + FIRE_SIZE/2,
-                       FIRE_SIZE/2, 1.0f, 0.6f, 0.2f, 0.5f * dim);
+                       FIRE_SIZE/2, 1.0f, 0.5f, 0.15f, 0.5f * dim);
     } else {
         draw_circle_gl(FIRE_X + FIRE_SIZE/2, FIRE_Y + FIRE_SIZE/2,
                        FIRE_SIZE/2, 1.0f, 0.5f, 0.15f, 0.4f * dim);
@@ -534,7 +534,7 @@ void input_draw_controls_gl(void)
     if (machine_get_type() == MACHINE_7800) {
         if (fire2_pressed) {
             draw_circle_gl(FIRE2_X + FIRE2_SIZE/2, FIRE2_Y + FIRE2_SIZE/2,
-                           FIRE2_SIZE/2, 1.0f, 0.6f, 0.2f, 0.5f * dim);
+                           FIRE2_SIZE/2, 1.0f, 0.5f, 0.15f, 0.5f * dim);
         } else {
             draw_circle_gl(FIRE2_X + FIRE2_SIZE/2, FIRE2_Y + FIRE2_SIZE/2,
                            FIRE2_SIZE/2, 1.0f, 0.5f, 0.15f, 0.4f * dim);
@@ -868,6 +868,12 @@ int input_keyboard_active(void)
     return g_keyboard_active;
 }
 
+/* Set keyboard active state (e.g. transferred from filepicker detection) */
+void input_set_keyboard_active(int active)
+{
+    g_keyboard_active = active;
+}
+
 /* Set whether a save file exists for the current ROM */
 void input_set_save_exists(int exists)
 {
@@ -954,7 +960,7 @@ int input_autosave_warn_result(void)  { return g_autosave_warn_result; }
 #define IGPOPUP_X       ((SCREEN_WIDTH - IGPOPUP_W) / 2)
 #define IGPOPUP_Y       ((SCREEN_HEIGHT - IGPOPUP_H) / 2)
 #define IGPOPUP_BTN_W   112
-#define IGPOPUP_BTN_H   32
+#define IGPOPUP_BTN_H   40
 
 /* Confirm dialog layout */
 #define CONFIRM_W    420
@@ -1052,9 +1058,10 @@ void input_draw_popup_gl(void)
                     break;
             }
 
-            /* Row label (white text) */
+            /* Row label (white text, vertically centered) */
             if (row_label) {
-                font_draw_string(row_label, row_x, row_y + 10, 2,
+                font_draw_string(row_label, row_x,
+                                 row_y + (IGPOPUP_ROW_H - 16) / 2, 2,
                                  0.9f, 0.9f, 0.9f, (row == 1 && !g_autosave) ? 0.4f : 0.9f);
             }
 
@@ -1071,7 +1078,7 @@ void input_draw_popup_gl(void)
             if (label) {
                 int lw = font_string_width(label, 2);
                 font_draw_string(label, btn_x + (IGPOPUP_BTN_W - lw) / 2,
-                                 btn_y + 8, 2, lbl_r, lbl_g, lbl_b, lbl_a);
+                                 btn_y + 12, 2, lbl_r, lbl_g, lbl_b, lbl_a);
             }
         }
     }
@@ -1106,20 +1113,20 @@ void input_draw_popup_gl(void)
 
         /* Yes */
         draw_rect_gl(yes_x, btn_cy, CONFIRM_BTN_W, CONFIRM_BTN_H,
-                     1.0f, 0.5f, 0.15f, 0.8f);
+                     0.3f, 0.3f, 0.3f, 0.6f);
         {
             int yw = font_string_width("Yes", 2);
             font_draw_string("Yes", yes_x + (CONFIRM_BTN_W - yw) / 2,
-                             btn_cy + 8, 2, 1.0f, 1.0f, 1.0f, 1.0f);
+                             btn_cy + 10, 2, 1.0f, 0.5f, 0.15f, 1.0f);
         }
 
         /* No */
         draw_rect_gl(no_x, btn_cy, CONFIRM_BTN_W, CONFIRM_BTN_H,
-                     0.3f, 0.3f, 0.3f, 0.8f);
+                     0.3f, 0.3f, 0.3f, 0.6f);
         {
             int nw = font_string_width("No", 2);
             font_draw_string("No", no_x + (CONFIRM_BTN_W - nw) / 2,
-                             btn_cy + 8, 2, 1.0f, 0.5f, 0.15f, 1.0f);
+                             btn_cy + 10, 2, 1.0f, 0.5f, 0.15f, 1.0f);
         }
     }
 

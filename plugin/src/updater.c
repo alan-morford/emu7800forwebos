@@ -300,7 +300,9 @@ const char *updater_get_note(void)
 void updater_install(void)
 {
     typedef int (*ServiceCallFunc)(const char *, const char *);
+    typedef int (*MinimizeFunc)(void);
     ServiceCallFunc fn;
+    MinimizeFunc minimize_fn;
     char params[768];
 
     if (!g_update_available || g_download_uri[0] == '\0') return;
@@ -316,7 +318,13 @@ void updater_install(void)
     fn("palm://com.palm.applicationManager/open", params);
     g_update_dismissed = 1;
 
-    /* Exit so the app doesn't linger in the background during install */
+    /* Minimize first so webOS can process the launch request */
+    minimize_fn = (MinimizeFunc)dlsym(RTLD_DEFAULT, "PDL_Minimize");
+    if (minimize_fn) minimize_fn();
+
+    /* Give webOS time to launch Preware before exiting */
+    usleep(2000000);
+
     exit(0);
 }
 
