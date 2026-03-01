@@ -10,6 +10,9 @@
 #ifndef UPDATER_H
 #define UPDATER_H
 
+/* Must match appinfo.json version */
+#define APP_VERSION "1.6.3"
+
 /* Start the background update check (idempotent — no-op if already started) */
 void updater_check_start(void);
 

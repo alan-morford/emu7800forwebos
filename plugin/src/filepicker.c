@@ -1388,9 +1388,13 @@ static void draw_settings_popup(void)
     {
         btn_x = popup_x + SETTINGS_POPUP_W - POPUP_PAD - btn_w;
 
-        font_draw_string("About EMU7800", popup_x + POPUP_PAD,
-                         row_y + (SETTINGS_ROW_H - 16) / 2, 2,
-                         0.9f, 0.9f, 0.9f, 0.9f);
+        {
+            char about_label[64];
+            snprintf(about_label, sizeof(about_label), "About EMU7800 v%s", APP_VERSION);
+            font_draw_string(about_label, popup_x + POPUP_PAD,
+                             row_y + (SETTINGS_ROW_H - 16) / 2, 2,
+                             0.9f, 0.9f, 0.9f, 0.9f);
+        }
 
         glDisable(GL_TEXTURE_2D);
         draw_rect(btn_x, row_y + (SETTINGS_ROW_H - RESUME_H) / 2,
