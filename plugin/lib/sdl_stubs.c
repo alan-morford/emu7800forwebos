@@ -29,6 +29,8 @@ void SDL_CloseAudio(void) {}
 void SDL_PauseAudio(int pause_on) {}
 void SDL_LockAudio(void) {}
 void SDL_UnlockAudio(void) {}
+int SDL_FillRect(void *dst, void *dstrect, Uint32 color) { (void)dst; (void)dstrect; (void)color; return 0; }
+Uint32 SDL_MapRGB(void *fmt, Uint8 r, Uint8 g, Uint8 b) { (void)fmt; (void)r; (void)g; (void)b; return 0; }
 const char *SDL_GetError(void) { return "stub"; }
 void SDL_Log(const char *fmt, ...) {}
 int SDL_GL_SetAttribute(int attr, int value) { return 0; }

@@ -22,6 +22,7 @@ LDFLAGS = $(LIBDIR) -Wl,-rpath-link,lib -Wl,--allow-shlib-undefined -l:libSDL-1.
 
 # Source files
 SOURCES = \
+	src/device.c \
 	src/main.c \
 	src/m6502.c \
 	src/tia.c \
@@ -37,7 +38,8 @@ SOURCES = \
 	src/font.c \
 	src/filepicker.c \
 	src/savestate.c \
-	src/updater.c
+	src/updater.c \
+	src/sw_render.c
 
 # Object files and dependency files
 OBJECTS = $(SOURCES:.c=.o)
@@ -76,4 +78,13 @@ host: $(SOURCES)
 check:
 	$(HOST_CC) $(HOST_CFLAGS) -fsyntax-only $(SOURCES)
 
-.PHONY: all clean host check
+# Pre3 diagnostic hello world (minimal: SDL + dlsym, no GL, no PDL link)
+HELLO_SRC = src/hello_pre3.c
+HELLO_TARGET = hello.arm
+HELLO_LDFLAGS = $(LIBDIR) -Wl,-rpath-link,lib -Wl,--allow-shlib-undefined -l:libSDL-1.2.so.0 -lm -ldl
+
+hello: $(HELLO_SRC)
+	$(CC) $(CFLAGS) -o $(HELLO_TARGET) $(HELLO_SRC) $(HELLO_LDFLAGS)
+	$(STRIP) $(HELLO_TARGET)
+
+.PHONY: all clean host check hello

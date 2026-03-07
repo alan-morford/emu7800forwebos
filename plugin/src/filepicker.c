@@ -28,38 +28,39 @@
 #include "asteroids_img.h"
 #include "logo_img.h"
 #include "gear_img.h"
+#include "device.h"
+#include "sw_render.h"
 /* External logging */
 extern void log_msg(const char *msg);
+
+/* Slow pulse: returns 0.0-1.0 triangle wave with ~2s period */
+static float update_pulse(void)
+{
+    Uint32 ms = SDL_GetTicks() % 2000;
+    /* 0-1000ms: ramp up, 1000-2000ms: ramp down */
+    if (ms < 1000) return ms / 1000.0f;
+    return (2000 - ms) / 1000.0f;
+}
 
 /* GL constant for RGB565 - may not be in webOS headers */
 #ifndef GL_UNSIGNED_SHORT_5_6_5
 #define GL_UNSIGNED_SHORT_5_6_5 0x8363
 #endif
 
-
-/* Screen dimensions */
-#define SCREEN_WIDTH  1024
-#define SCREEN_HEIGHT 768
-
-/* UI layout */
-#define MARGIN_X      16
-#define TITLE_Y       16
-#define LIST_TOP      120
-#define LIST_BOTTOM   (SCREEN_HEIGHT - 8)
-#define ITEM_HEIGHT   48
-#define SCROLLBAR_W   8
-#define SCROLLBAR_X   (SCREEN_WIDTH - MARGIN_X)
-
-/* Resume button (top-left) */
-#define RESUME_X      MARGIN_X
-#define RESUME_Y      16
-#define RESUME_H      40
-
-/* Asteroids launch image (right-aligned, bottom-aligned with list) */
-#define AST_BTN_W     180
-#define AST_BTN_H     180
-#define AST_BTN_X     (SCREEN_WIDTH - MARGIN_X - AST_BTN_W)
-#define AST_BTN_Y     (LIST_BOTTOM - AST_BTN_H)
+/* Filepicker layout variables — initialized by filepicker_init_layout() */
+static int FP_SCREEN_W, FP_SCREEN_H;
+static int MARGIN_X;
+static int TITLE_Y;
+static int TITLE_SCALE;
+static int LIST_TOP;
+static int LIST_BOTTOM;
+static int ITEM_HEIGHT;
+static int LIST_SCALE;  /* font scale for file list items */
+static int SCROLLBAR_W;
+static int SCROLLBAR_X;
+static int RESUME_X, RESUME_Y, RESUME_H;
+static int AST_BTN_W, AST_BTN_H, AST_BTN_X, AST_BTN_Y;
+static int LOGO_SCALE;
 
 /* Bundled ROM path (installed alongside the binary) */
 #define BUNDLED_ASTEROIDS_ROM "/media/cryptofs/apps/usr/palm/applications/com.emu7800.touchpad/Asteroids.a78"
@@ -76,16 +77,28 @@ extern void log_msg(const char *msg);
 #define LASTROM_FILE "/media/internal/.emu7800_lastrom"
 
 /* Recently played list */
-#define RECENT_MAX  9
+#define RECENT_MAX  32
 #define RECENT_FILE "/media/internal/.emu7800_recent"
 
-/* Popup layout */
-#define POPUP_W       600
-#define POPUP_PAD     16
+/* Popup layout variables — initialized by filepicker_init_layout() */
+static int POPUP_W;
+static int POPUP_PAD;
+static int POPUP_ITEM_H;
+static int POPUP_BTN_H;
+static int UPDATE_POPUP_W;
+static int DIRASK_W;
+static int DIRPICKER_W, DIRPICKER_VISIBLE, DIRPICKER_ITEM_H;
+static int DIRPICKER_LIST_H, DIRPICKER_H;
+static int SETTINGS_POPUP_W, SETTINGS_ROW_H, SETTINGS_POPUP_H;
+static int ABOUT_W;
+static int SAVE_POPUP_W, SAVE_POPUP_H;
+static int FP_ASWARN_W, FP_ASWARN_H;
+static int DIRASK_H;
 #define POPUP_TITLE_H 16
 #define POPUP_GAP     12
-#define POPUP_ITEM_H  40
-#define POPUP_BTN_H   36
+#define DIRPICKER_TITLE_H  28  /* scale 3 title height */
+#define SETTINGS_ROWS        9
+#define SETTINGS_TITLE_H     28  /* scale 3 title height (matches Options popup) */
 
 /* Entry type constants */
 #define ENTRY_DIR     -2
@@ -177,11 +190,25 @@ static int  g_update_later = 0;        /* 1 after user tapped LATER */
 static int  g_fp_aswarn_visible = 0;
 static int  g_fp_aswarn_action = 0;  /* 0=enabling autosave, 1=disabling ask */
 
+/* File-not-found popup state */
+static int  g_notfound_visible = 0;
+static int  g_notfound_recent_idx = -1;  /* -1 = was resume, >=0 = recent index */
+
 /* Directory picker touch tracking */
 static int  g_dirpicker_touch_active = 0;
 static int  g_dirpicker_touch_start_y = 0;
 static float g_dirpicker_scroll_at_start = 0.0f;
 static int  g_dirpicker_touch_moved = 0;
+
+/* Recent popup scroll tracking */
+static float g_recent_scroll = 0.0f;
+static int  g_recent_touch_active = 0;
+static int  g_recent_touch_start_y = 0;
+static float g_recent_scroll_at_start = 0.0f;
+static int  g_recent_touch_moved = 0;
+static int  RECENT_VISIBLE;    /* max visible items before scrolling */
+static int  RECENT_ITEM_H;    /* item height in recent popup */
+static int  RECENT_SCALE;     /* font scale for recent items */
 
 /* Keyboard detected (set on first keypress, cleared on touch) */
 static int g_keyboard_detected = 0;
@@ -282,6 +309,73 @@ static void load_recent_list(void)
         g_recent_count++;
     }
     fclose(f);
+}
+
+/* Remove a recent entry by index and save */
+static void remove_recent_entry(int idx)
+{
+    int i;
+    if (idx < 0 || idx >= g_recent_count) return;
+    for (i = idx; i < g_recent_count - 1; i++) {
+        strncpy(g_recent_paths[i], g_recent_paths[i + 1], MAX_PATH_LEN);
+        g_recent_types[i] = g_recent_types[i + 1];
+    }
+    g_recent_count--;
+    save_recent_list();
+}
+
+/* Clear the last ROM and remove the persistence file */
+static void clear_last_rom(void)
+{
+    g_has_last_rom = 0;
+    g_last_rom_path[0] = '\0';
+    g_last_rom_type = 0;
+    remove(LASTROM_FILE);
+}
+
+/* Remove recent entries whose files no longer exist, and clear lastrom if missing */
+static void cleanup_missing_files(void)
+{
+    int i;
+    /* Clean recent list (iterate backwards to allow removal) */
+    for (i = g_recent_count - 1; i >= 0; i--) {
+        if (access(g_recent_paths[i], F_OK) != 0) {
+            remove_recent_entry(i);
+        }
+    }
+    /* Clean lastrom */
+    if (g_has_last_rom && access(g_last_rom_path, F_OK) != 0) {
+        clear_last_rom();
+        g_notfound_visible = 1;
+        g_notfound_recent_idx = -1;
+    }
+}
+
+/* Handle dismissal of the file-not-found popup */
+static void dismiss_notfound(void)
+{
+    if (g_notfound_recent_idx >= 0) {
+        remove_recent_entry(g_notfound_recent_idx);
+    } else {
+        clear_last_rom();
+    }
+    /* Also remove from recent list if it matches lastrom path */
+    {
+        int i;
+        for (i = g_recent_count - 1; i >= 0; i--) {
+            if (access(g_recent_paths[i], F_OK) != 0)
+                remove_recent_entry(i);
+        }
+    }
+    g_notfound_visible = 0;
+    g_notfound_recent_idx = -1;
+}
+
+/* Show the "File not found" popup from outside (e.g. launch_selected_rom) */
+void filepicker_show_notfound(void)
+{
+    g_notfound_visible = 1;
+    g_notfound_recent_idx = -1;
 }
 
 /* Load settings from persistence file */
@@ -480,9 +574,70 @@ static void add_to_recent(const char *path, int type)
     save_recent_list();
 }
 
+/* Initialize layout variables based on device type */
+static void filepicker_init_layout(void)
+{
+    FP_SCREEN_W = device_screen_width();
+    FP_SCREEN_H = device_screen_height();
+
+    if (device_is_small()) {
+        /* HP Pre3 (800x480) — maximize popup/button sizes */
+        MARGIN_X = 12;  TITLE_Y = 10;  TITLE_SCALE = 5;
+        LIST_TOP = 104;  ITEM_HEIGHT = 48;  LIST_SCALE = 3;
+        SCROLLBAR_W = 6;
+        RESUME_H = 40;
+        AST_BTN_W = 138;  AST_BTN_H = 138;
+        LOGO_SCALE = 2;
+
+        /* Popup dimensions (600px wide = 100px tap margin each side) */
+        POPUP_W = 600;  POPUP_PAD = 16;
+        POPUP_ITEM_H = 40;  POPUP_BTN_H = 40;
+        RECENT_VISIBLE = 5;  RECENT_ITEM_H = 48;  RECENT_SCALE = 3;
+        UPDATE_POPUP_W = 600;
+        DIRASK_W = 600;  DIRASK_H = 140;
+        DIRPICKER_W = 600;  DIRPICKER_VISIBLE = 5;  DIRPICKER_ITEM_H = 48;
+        SETTINGS_POPUP_W = 600;  SETTINGS_ROW_H = 42;
+        ABOUT_W = 600;
+        SAVE_POPUP_W = 600;  SAVE_POPUP_H = 140;
+        FP_ASWARN_W = 600;  FP_ASWARN_H = 210;
+    } else {
+        /* HP TouchPad (1024x768) */
+        MARGIN_X = 16;  TITLE_Y = 16;  TITLE_SCALE = 5;
+        LIST_TOP = 120;  ITEM_HEIGHT = 48;  LIST_SCALE = 2;
+        SCROLLBAR_W = 8;
+        RESUME_H = 40;
+        AST_BTN_W = 180;  AST_BTN_H = 180;
+        LOGO_SCALE = 3;
+
+        /* Popup dimensions */
+        POPUP_W = 600;  POPUP_PAD = 16;
+        POPUP_ITEM_H = 40;  POPUP_BTN_H = 36;
+        RECENT_VISIBLE = 9;  RECENT_ITEM_H = 40;  RECENT_SCALE = 2;
+        UPDATE_POPUP_W = 600;
+        DIRASK_W = 600;  DIRASK_H = 120;
+        DIRPICKER_W = 600;  DIRPICKER_VISIBLE = 8;  DIRPICKER_ITEM_H = 40;
+        SETTINGS_POPUP_W = 500;  SETTINGS_ROW_H = 44;
+        ABOUT_W = 800;
+        SAVE_POPUP_W = 600;  SAVE_POPUP_H = 128;
+        FP_ASWARN_W = 640;  FP_ASWARN_H = 210;
+    }
+
+    /* Derived values */
+    LIST_BOTTOM = FP_SCREEN_H - 8;
+    SCROLLBAR_X = FP_SCREEN_W - MARGIN_X;
+    RESUME_X = MARGIN_X;  RESUME_Y = TITLE_Y;
+    AST_BTN_X = FP_SCREEN_W - MARGIN_X - AST_BTN_W;
+    AST_BTN_Y = LIST_BOTTOM - AST_BTN_H;
+
+    DIRPICKER_LIST_H = DIRPICKER_VISIBLE * DIRPICKER_ITEM_H;
+    DIRPICKER_H = POPUP_PAD + DIRPICKER_TITLE_H + 8 + DIRPICKER_LIST_H + 12 + RESUME_H + POPUP_PAD;
+    SETTINGS_POPUP_H = POPUP_PAD + SETTINGS_TITLE_H + POPUP_PAD + SETTINGS_ROWS * SETTINGS_ROW_H + POPUP_PAD;
+}
+
 /* Initialize */
 void filepicker_init(void)
 {
+    filepicker_init_layout();
     g_file_count = 0;
     g_scroll_offset = 0.0f;
     g_selected_index = -1;
@@ -503,6 +658,9 @@ void filepicker_init(void)
         g_dirask_popup_visible = 1;
     }
 
+    /* Remove entries for files that no longer exist */
+    cleanup_missing_files();
+
     /* Seed recent list from last ROM if upgrading from older version */
     if (g_has_last_rom && g_recent_count == 0) {
         add_to_recent(g_last_rom_path, g_last_rom_type);
@@ -511,51 +669,54 @@ void filepicker_init(void)
     /* Start background update check */
     updater_check_start();
 
-    /* Create Asteroids image texture */
-    if (g_ast_texture == 0) {
-        glGenTextures(1, &g_ast_texture);
-        glBindTexture(GL_TEXTURE_2D, g_ast_texture);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB,
-                     ASTEROIDS_IMG_W, ASTEROIDS_IMG_H, 0,
-                     GL_RGB, GL_UNSIGNED_SHORT_5_6_5,
-                     asteroids_img_data);
-        glBindTexture(GL_TEXTURE_2D, 0);
-    }
+    /* Create GL textures (TouchPad only) */
+    if (device_has_gl()) {
+        /* Create Asteroids image texture */
+        if (g_ast_texture == 0) {
+            glGenTextures(1, &g_ast_texture);
+            glBindTexture(GL_TEXTURE_2D, g_ast_texture);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB,
+                         ASTEROIDS_IMG_W, ASTEROIDS_IMG_H, 0,
+                         GL_RGB, GL_UNSIGNED_SHORT_5_6_5,
+                         asteroids_img_data);
+            glBindTexture(GL_TEXTURE_2D, 0);
+        }
 
-    /* Create gear icon texture (RGBA for transparency) */
-    if (g_gear_texture == 0) {
-        glGenTextures(1, &g_gear_texture);
-        glBindTexture(GL_TEXTURE_2D, g_gear_texture);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
-                     GEAR_TEX_SIZE, GEAR_TEX_SIZE, 0,
-                     GL_RGBA, GL_UNSIGNED_BYTE,
-                     gear_img_data);
-        glBindTexture(GL_TEXTURE_2D, 0);
-    }
+        /* Create gear icon texture (RGBA for transparency) */
+        if (g_gear_texture == 0) {
+            glGenTextures(1, &g_gear_texture);
+            glBindTexture(GL_TEXTURE_2D, g_gear_texture);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
+                         GEAR_TEX_SIZE, GEAR_TEX_SIZE, 0,
+                         GL_RGBA, GL_UNSIGNED_BYTE,
+                         gear_img_data);
+            glBindTexture(GL_TEXTURE_2D, 0);
+        }
 
-    /* Create animated logo texture */
-    if (g_logo_texture == 0) {
-        glGenTextures(1, &g_logo_texture);
-        glBindTexture(GL_TEXTURE_2D, g_logo_texture);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB,
-                     LOGO_TEX_SIZE, LOGO_TEX_SIZE, 0,
-                     GL_RGB, GL_UNSIGNED_SHORT_5_6_5,
-                     logo_frame_data[0]);
-        glBindTexture(GL_TEXTURE_2D, 0);
-        g_logo_frame = 0;
-        g_logo_last_tick = 0;
+        /* Create animated logo texture */
+        if (g_logo_texture == 0) {
+            glGenTextures(1, &g_logo_texture);
+            glBindTexture(GL_TEXTURE_2D, g_logo_texture);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB,
+                         LOGO_TEX_SIZE, LOGO_TEX_SIZE, 0,
+                         GL_RGB, GL_UNSIGNED_SHORT_5_6_5,
+                         logo_frame_data[0]);
+            glBindTexture(GL_TEXTURE_2D, 0);
+            g_logo_frame = 0;
+            g_logo_last_tick = 0;
+        }
     }
 }
 
@@ -563,17 +724,19 @@ void filepicker_init(void)
 void filepicker_shutdown(void)
 {
     updater_shutdown();
-    if (g_ast_texture) {
-        glDeleteTextures(1, &g_ast_texture);
-        g_ast_texture = 0;
-    }
-    if (g_logo_texture) {
-        glDeleteTextures(1, &g_logo_texture);
-        g_logo_texture = 0;
-    }
-    if (g_gear_texture) {
-        glDeleteTextures(1, &g_gear_texture);
-        g_gear_texture = 0;
+    if (device_has_gl()) {
+        if (g_ast_texture) {
+            glDeleteTextures(1, &g_ast_texture);
+            g_ast_texture = 0;
+        }
+        if (g_logo_texture) {
+            glDeleteTextures(1, &g_logo_texture);
+            g_logo_texture = 0;
+        }
+        if (g_gear_texture) {
+            glDeleteTextures(1, &g_gear_texture);
+            g_gear_texture = 0;
+        }
     }
     g_file_count = 0;
 }
@@ -723,7 +886,6 @@ static void draw_rect_outline(float x, float y, float w, float h,
 }
 
 /* Update popup dimensions */
-#define UPDATE_POPUP_W   600
 #define UPDATE_POPUP_MAX_H 600
 #define UPDATE_LINE_H    20   /* line height for note text at scale 2 */
 #define UPDATE_MAX_LINES 20
@@ -808,14 +970,14 @@ static void draw_update_popup(void)
     }
 
     popup_h = update_popup_height(note_count);
-    popup_x = (SCREEN_WIDTH - UPDATE_POPUP_W) / 2;
-    popup_y = (SCREEN_HEIGHT - popup_h) / 2;
+    popup_x = (FP_SCREEN_W - UPDATE_POPUP_W) / 2;
+    popup_y = (FP_SCREEN_H - popup_h) / 2;
 
     glDisable(GL_TEXTURE_2D);
     glEnable(GL_BLEND);
 
     /* Semi-transparent overlay */
-    draw_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0.0f, 0.0f, 0.0f, 0.6f);
+    draw_rect(0, 0, FP_SCREEN_W, FP_SCREEN_H, 0.0f, 0.0f, 0.0f, 0.6f);
 
     /* Black filled popup box */
     draw_rect(popup_x, popup_y, UPDATE_POPUP_W, popup_h,
@@ -869,10 +1031,6 @@ static void draw_update_popup(void)
     }
 }
 
-/* Directory ask popup dimensions */
-#define DIRASK_W  600
-#define DIRASK_H  120
-
 /* Draw the "Set a default ROM directory?" popup */
 static void draw_dirask_popup(void)
 {
@@ -882,14 +1040,14 @@ static void draw_dirask_popup(void)
 
     if (!g_dirask_popup_visible) return;
 
-    popup_x = (SCREEN_WIDTH - DIRASK_W) / 2;
-    popup_y = (SCREEN_HEIGHT - DIRASK_H) / 2;
+    popup_x = (FP_SCREEN_W - DIRASK_W) / 2;
+    popup_y = (FP_SCREEN_H - DIRASK_H) / 2;
 
     glDisable(GL_TEXTURE_2D);
     glEnable(GL_BLEND);
 
     /* Semi-transparent overlay */
-    draw_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0.0f, 0.0f, 0.0f, 0.6f);
+    draw_rect(0, 0, FP_SCREEN_W, FP_SCREEN_H, 0.0f, 0.0f, 0.0f, 0.6f);
 
     /* Black filled popup box */
     draw_rect(popup_x, popup_y, DIRASK_W, DIRASK_H, 0.0f, 0.0f, 0.0f, 1.0f);
@@ -936,12 +1094,6 @@ static void draw_dirask_popup(void)
 }
 
 /* Directory picker popup dimensions */
-#define DIRPICKER_W        600
-#define DIRPICKER_VISIBLE  8
-#define DIRPICKER_ITEM_H   40
-#define DIRPICKER_LIST_H   (DIRPICKER_VISIBLE * DIRPICKER_ITEM_H)
-#define DIRPICKER_TITLE_H  28  /* scale 3 title height */
-#define DIRPICKER_H        (POPUP_PAD + DIRPICKER_TITLE_H + 8 + DIRPICKER_LIST_H + 12 + RESUME_H + POPUP_PAD)
 
 /* Draw the directory picker popup */
 static void draw_dirpicker_popup(void)
@@ -955,14 +1107,14 @@ static void draw_dirpicker_popup(void)
 
     if (!g_dirpicker_popup_visible) return;
 
-    popup_x = (SCREEN_WIDTH - DIRPICKER_W) / 2;
-    popup_y = (SCREEN_HEIGHT - DIRPICKER_H) / 2;
+    popup_x = (FP_SCREEN_W - DIRPICKER_W) / 2;
+    popup_y = (FP_SCREEN_H - DIRPICKER_H) / 2;
 
     glDisable(GL_TEXTURE_2D);
     glEnable(GL_BLEND);
 
     /* Semi-transparent overlay */
-    draw_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0.0f, 0.0f, 0.0f, 0.6f);
+    draw_rect(0, 0, FP_SCREEN_W, FP_SCREEN_H, 0.0f, 0.0f, 0.0f, 0.6f);
 
     /* Black filled popup box */
     draw_rect(popup_x, popup_y, DIRPICKER_W, DIRPICKER_H, 0.0f, 0.0f, 0.0f, 1.0f);
@@ -1084,15 +1236,15 @@ static void draw_recent_popup(void)
         popup_h = POPUP_PAD + recent_title_h + POPUP_GAP
                 + g_recent_count * POPUP_ITEM_H
                 + POPUP_GAP + POPUP_BTN_H + POPUP_PAD;
-        popup_x = (SCREEN_WIDTH - POPUP_W) / 2;
-        popup_y = (SCREEN_HEIGHT - popup_h) / 2;
+        popup_x = (FP_SCREEN_W - POPUP_W) / 2;
+        popup_y = (FP_SCREEN_H - popup_h) / 2;
     }
 
     glDisable(GL_TEXTURE_2D);
     glEnable(GL_BLEND);
 
     /* Semi-transparent overlay */
-    draw_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0.0f, 0.0f, 0.0f, 0.6f);
+    draw_rect(0, 0, FP_SCREEN_W, FP_SCREEN_H, 0.0f, 0.0f, 0.0f, 0.6f);
 
     /* Black filled popup box */
     draw_rect(popup_x, popup_y, POPUP_W, popup_h, 0.0f, 0.0f, 0.0f, 1.0f);
@@ -1163,15 +1315,8 @@ static void draw_recent_popup(void)
 }
 
 /* Settings popup layout */
-#define SETTINGS_POPUP_W     500
-#define SETTINGS_ROW_H       44
-#define SETTINGS_ROWS        9
-#define SETTINGS_TITLE_H     28  /* scale 3 title height (matches Options popup) */
-#define SETTINGS_POPUP_H     (POPUP_PAD + SETTINGS_TITLE_H + POPUP_PAD + SETTINGS_ROWS * SETTINGS_ROW_H + POPUP_PAD)
 
 /* Auto-save warning popup (filepicker) */
-#define FP_ASWARN_W   640
-#define FP_ASWARN_H   210
 #define FP_ASWARN_BTN_W 80
 #define FP_ASWARN_BTN_H 36
 
@@ -1184,14 +1329,14 @@ static void draw_settings_popup(void)
 
     if (!g_settings_popup_visible) return;
 
-    popup_x = (SCREEN_WIDTH - SETTINGS_POPUP_W) / 2;
-    popup_y = (SCREEN_HEIGHT - SETTINGS_POPUP_H) / 2;
+    popup_x = (FP_SCREEN_W - SETTINGS_POPUP_W) / 2;
+    popup_y = (FP_SCREEN_H - SETTINGS_POPUP_H) / 2;
 
     glDisable(GL_TEXTURE_2D);
     glEnable(GL_BLEND);
 
     /* Semi-transparent overlay */
-    draw_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0.0f, 0.0f, 0.0f, 0.6f);
+    draw_rect(0, 0, FP_SCREEN_W, FP_SCREEN_H, 0.0f, 0.0f, 0.0f, 0.6f);
 
     /* Black filled popup box */
     draw_rect(popup_x, popup_y, SETTINGS_POPUP_W, SETTINGS_POPUP_H, 0.0f, 0.0f, 0.0f, 1.0f);
@@ -1407,7 +1552,6 @@ static void draw_settings_popup(void)
 }
 
 /* About popup dimensions (content is fixed) */
-#define ABOUT_W         800
 #define ABOUT_TITLE_H   28  /* scale 3 title height */
 #define ABOUT_LINES     8
 #define ABOUT_GAPS      3
@@ -1436,14 +1580,14 @@ static void draw_about_popup(void)
 
     if (!g_about_popup_visible) return;
 
-    popup_x = (SCREEN_WIDTH - ABOUT_W) / 2;
-    popup_y = (SCREEN_HEIGHT - ABOUT_H) / 2;
+    popup_x = (FP_SCREEN_W - ABOUT_W) / 2;
+    popup_y = (FP_SCREEN_H - ABOUT_H) / 2;
 
     glDisable(GL_TEXTURE_2D);
     glEnable(GL_BLEND);
 
     /* Semi-transparent overlay */
-    draw_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0.0f, 0.0f, 0.0f, 0.6f);
+    draw_rect(0, 0, FP_SCREEN_W, FP_SCREEN_H, 0.0f, 0.0f, 0.0f, 0.6f);
 
     /* Black filled popup box */
     draw_rect(popup_x, popup_y, ABOUT_W, ABOUT_H, 0.0f, 0.0f, 0.0f, 1.0f);
@@ -1477,8 +1621,7 @@ static void draw_about_popup(void)
 }
 
 /* Save popup dimensions */
-#define SAVE_POPUP_W  600
-#define SAVE_POPUP_H  128  /* PAD(16) + text(40) + gap(16) + btn(40) + PAD(16) */
+/* SAVE_POPUP_H is now a variable — set in filepicker_init_layout() */
 
 /* Draw the save popup overlay */
 static void draw_save_popup(void)
@@ -1490,14 +1633,14 @@ static void draw_save_popup(void)
 
     if (!g_save_popup_visible) return;
 
-    popup_x = (SCREEN_WIDTH - SAVE_POPUP_W) / 2;
-    popup_y = (SCREEN_HEIGHT - SAVE_POPUP_H) / 2;
+    popup_x = (FP_SCREEN_W - SAVE_POPUP_W) / 2;
+    popup_y = (FP_SCREEN_H - SAVE_POPUP_H) / 2;
 
     glDisable(GL_TEXTURE_2D);
     glEnable(GL_BLEND);
 
     /* Semi-transparent overlay */
-    draw_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0.0f, 0.0f, 0.0f, 0.6f);
+    draw_rect(0, 0, FP_SCREEN_W, FP_SCREEN_H, 0.0f, 0.0f, 0.0f, 0.6f);
 
     /* Black filled popup box */
     draw_rect(popup_x, popup_y, SAVE_POPUP_W, SAVE_POPUP_H, 0.0f, 0.0f, 0.0f, 1.0f);
@@ -1564,6 +1707,52 @@ static void draw_save_popup(void)
 }
 
 /* Delete confirmation popup (same dimensions as save popup) */
+static void draw_notfound_popup(void)
+{
+    int popup_w, popup_h, popup_x, popup_y, tw;
+
+    if (!g_notfound_visible) return;
+
+    popup_w = 440;
+    popup_h = 60;
+    popup_x = (FP_SCREEN_W - popup_w) / 2;
+    popup_y = (FP_SCREEN_H - popup_h) / 2;
+
+    glDisable(GL_TEXTURE_2D);
+    glEnable(GL_BLEND);
+    draw_rect(0, 0, FP_SCREEN_W, FP_SCREEN_H, 0.0f, 0.0f, 0.0f, 0.6f);
+    draw_rect(popup_x, popup_y, popup_w, popup_h, 0.0f, 0.0f, 0.0f, 1.0f);
+    draw_rect_outline(popup_x, popup_y, popup_w, popup_h,
+                      1.0f, 0.5f, 0.15f, 0.8f);
+
+    tw = font_string_width("The game file was missing", 2);
+    font_draw_string("The game file was missing",
+                     popup_x + (popup_w - tw) / 2,
+                     popup_y + (popup_h - 16) / 2, 2,
+                     1.0f, 0.5f, 0.15f, 1.0f);
+}
+
+static void draw_notfound_popup_sw(void)
+{
+    int popup_w, popup_h, popup_x, popup_y, tw;
+
+    if (!g_notfound_visible) return;
+
+    popup_w = 440;
+    popup_h = 60;
+    popup_x = (FP_SCREEN_W - popup_w) / 2;
+    popup_y = (FP_SCREEN_H - popup_h) / 2;
+
+    sw_fill_rect_a(0, 0, FP_SCREEN_W, FP_SCREEN_H, 0, 0, 0, 153);
+    sw_fill_rect(popup_x - 1, popup_y - 1, popup_w + 2, popup_h + 2, 255, 128, 38);
+    sw_fill_rect(popup_x, popup_y, popup_w, popup_h, 0, 0, 0);
+
+    tw = sw_string_width("The game file was missing", 2);
+    sw_draw_string(popup_x + (popup_w - tw) / 2,
+                   popup_y + (popup_h - 16) / 2,
+                   "The game file was missing", 2, 255, 128, 38);
+}
+
 static void draw_delete_confirm_popup(void)
 {
     int popup_x, popup_y;
@@ -1572,14 +1761,14 @@ static void draw_delete_confirm_popup(void)
 
     if (!g_delete_confirm_visible) return;
 
-    popup_x = (SCREEN_WIDTH - SAVE_POPUP_W) / 2;
-    popup_y = (SCREEN_HEIGHT - SAVE_POPUP_H) / 2;
+    popup_x = (FP_SCREEN_W - SAVE_POPUP_W) / 2;
+    popup_y = (FP_SCREEN_H - SAVE_POPUP_H) / 2;
 
     glDisable(GL_TEXTURE_2D);
     glEnable(GL_BLEND);
 
     /* Semi-transparent overlay */
-    draw_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0.0f, 0.0f, 0.0f, 0.6f);
+    draw_rect(0, 0, FP_SCREEN_W, FP_SCREEN_H, 0.0f, 0.0f, 0.0f, 0.6f);
 
     /* Black filled popup box */
     draw_rect(popup_x, popup_y, SAVE_POPUP_W, SAVE_POPUP_H, 0.0f, 0.0f, 0.0f, 1.0f);
@@ -1698,14 +1887,14 @@ static void draw_fp_aswarn_popup(void)
     else
         last_line = "disable Ask Before Saving?";
 
-    popup_x = (SCREEN_WIDTH - FP_ASWARN_W) / 2;
-    popup_y = (SCREEN_HEIGHT - FP_ASWARN_H) / 2;
+    popup_x = (FP_SCREEN_W - FP_ASWARN_W) / 2;
+    popup_y = (FP_SCREEN_H - FP_ASWARN_H) / 2;
 
     glDisable(GL_TEXTURE_2D);
     glEnable(GL_BLEND);
 
     /* Dark overlay on top of settings popup */
-    draw_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0.0f, 0.0f, 0.0f, 0.4f);
+    draw_rect(0, 0, FP_SCREEN_W, FP_SCREEN_H, 0.0f, 0.0f, 0.0f, 0.4f);
 
     /* Box with orange border */
     draw_rect(popup_x - 1, popup_y - 1, FP_ASWARN_W + 2, FP_ASWARN_H + 2,
@@ -1747,12 +1936,863 @@ static void draw_fp_aswarn_popup(void)
 }
 
 /* Draw the file picker UI */
+/* ---- Software rendering path for file picker (Pre3) ---- */
+
+static void draw_settings_popup_sw(void)
+{
+    int popup_x, popup_y;
+    int tw, row_y;
+    int btn_w, btn_x;
+    int row;
+
+    if (!g_settings_popup_visible) return;
+
+    popup_x = (FP_SCREEN_W - SETTINGS_POPUP_W) / 2;
+    popup_y = (FP_SCREEN_H - SETTINGS_POPUP_H) / 2;
+
+    /* Semi-transparent overlay */
+    sw_fill_rect_a(0, 0, FP_SCREEN_W, FP_SCREEN_H, 0, 0, 0, 153);
+
+    /* Popup box with orange border */
+    sw_fill_rect(popup_x - 1, popup_y - 1, SETTINGS_POPUP_W + 2, SETTINGS_POPUP_H + 2, 255, 128, 38);
+    sw_fill_rect(popup_x, popup_y, SETTINGS_POPUP_W, SETTINGS_POPUP_H, 0, 0, 0);
+
+    /* Title */
+    tw = sw_string_width("Settings", 3);
+    sw_draw_string(popup_x + (SETTINGS_POPUP_W - tw) / 2, popup_y + POPUP_PAD, "Settings", 3, 255, 128, 38);
+
+    /* Row area */
+    row_y = popup_y + POPUP_PAD + SETTINGS_TITLE_H + POPUP_PAD;
+
+    /* Button width (uniform) */
+    {
+        int w1 = sw_string_width("MEDIUM", 2);
+        int w2 = sw_string_width("EMAIL", 2);
+        int w3 = sw_string_width("BRIGHT", 2);
+        btn_w = w1 > w2 ? w1 : w2;
+        if (w3 > btn_w) btn_w = w3;
+        btn_w += 16;
+    }
+
+    for (row = 0; row < SETTINGS_ROWS; row++) {
+        const char *row_label = NULL;
+        const char *btn_label = NULL;
+        int greyed = 0;
+
+        btn_x = popup_x + SETTINGS_POPUP_W - POPUP_PAD - btn_w;
+
+        switch (row) {
+            case 0: row_label = "Scanlines"; btn_label = video_get_scanlines() ? "ON" : "OFF"; break;
+            case 1: row_label = "Scanline Brightness"; btn_label = video_get_scanline_brightness_label(); break;
+            case 2: row_label = "Palette (7800)"; btn_label = video_get_palette_label(); break;
+            case 3: row_label = "Control Brightness";
+                switch (input_get_control_dim()) { case 1: btn_label = "DIM"; break; case 2: btn_label = "DIMMER"; break; default: btn_label = "BRIGHT"; break; }
+                break;
+            case 4: row_label = "Auto-Save on Close"; btn_label = input_get_autosave() ? "ON" : "OFF"; break;
+            case 5: row_label = "Ask Before Saving"; btn_label = input_get_autosave_ask() ? "ON" : "OFF";
+                greyed = !input_get_autosave(); break;
+            case 6: row_label = "Change ROM Directory"; btn_label = "SET"; break;
+            case 7: row_label = "Bug Report"; btn_label = "EMAIL"; break;
+            case 8: {
+                char about_label[64];
+                snprintf(about_label, sizeof(about_label), "About EMU7800 v%s", APP_VERSION);
+                row_label = about_label;
+                btn_label = "INFO";
+                sw_draw_string_a(popup_x + POPUP_PAD, row_y + (SETTINGS_ROW_H - 16) / 2,
+                                 about_label, 2, 230, 230, 230, 230);
+                row_label = NULL; /* skip generic label draw */
+                break;
+            }
+        }
+
+        if (row_label) {
+            uint8_t la = greyed ? 102 : 230;
+            sw_draw_string_a(popup_x + POPUP_PAD, row_y + (SETTINGS_ROW_H - 16) / 2,
+                             row_label, 2, 230, 230, 230, la);
+        }
+
+        if (btn_label) {
+            if (greyed) {
+                sw_fill_rect_a(btn_x, row_y + (SETTINGS_ROW_H - RESUME_H) / 2,
+                               btn_w, RESUME_H, 51, 51, 51, 77);
+            } else {
+                sw_fill_rect_a(btn_x, row_y + (SETTINGS_ROW_H - RESUME_H) / 2,
+                               btn_w, RESUME_H, 77, 77, 77, 153);
+            }
+            tw = sw_string_width(btn_label, 2);
+            if (greyed) {
+                sw_draw_string_a(btn_x + (btn_w - tw) / 2,
+                                 row_y + (SETTINGS_ROW_H - RESUME_H) / 2 + 12,
+                                 btn_label, 2, 102, 102, 102, 128);
+            } else {
+                sw_draw_string(btn_x + (btn_w - tw) / 2,
+                               row_y + (SETTINGS_ROW_H - RESUME_H) / 2 + 12,
+                               btn_label, 2, 255, 128, 38);
+            }
+        }
+
+        row_y += SETTINGS_ROW_H;
+    }
+}
+
+static void draw_save_popup_sw(void)
+{
+    int popup_x, popup_y;
+    int tw;
+    int text_y;
+    int w1, w2, w3, btn_w, gap, total_w, bx, by;
+
+    if (!g_save_popup_visible) return;
+
+    popup_x = (FP_SCREEN_W - SAVE_POPUP_W) / 2;
+    popup_y = (FP_SCREEN_H - SAVE_POPUP_H) / 2;
+
+    sw_fill_rect_a(0, 0, FP_SCREEN_W, FP_SCREEN_H, 0, 0, 0, 153);
+    sw_fill_rect(popup_x - 1, popup_y - 1, SAVE_POPUP_W + 2, SAVE_POPUP_H + 2, 255, 128, 38);
+    sw_fill_rect(popup_x, popup_y, SAVE_POPUP_W, SAVE_POPUP_H, 0, 0, 0);
+
+    /* Text: two centered lines */
+    text_y = popup_y + POPUP_PAD;
+    tw = sw_string_width("Would you like to continue", 2);
+    sw_draw_string(popup_x + (SAVE_POPUP_W - tw) / 2, text_y,
+                   "Would you like to continue", 2, 255, 128, 38);
+    text_y += 20;
+    tw = sw_string_width("from your Save?", 2);
+    sw_draw_string(popup_x + (SAVE_POPUP_W - tw) / 2, text_y,
+                   "from your Save?", 2, 255, 128, 38);
+
+    /* Three equal-width buttons — must match touch handler layout */
+    w1 = sw_string_width("Yes", 2) + 16;
+    w2 = sw_string_width("No", 2) + 16;
+    w3 = sw_string_width("Delete", 2) + 16;
+    btn_w = w1 > w2 ? w1 : w2;
+    if (w3 > btn_w) btn_w = w3;
+    gap = 16;
+    total_w = btn_w * 3 + gap * 2;
+    bx = popup_x + (SAVE_POPUP_W - total_w) / 2;
+    by = popup_y + POPUP_PAD + 40 + 16;
+
+    /* Yes button */
+    sw_fill_rect_a(bx, by, btn_w, RESUME_H, 77, 77, 77, 153);
+    tw = sw_string_width("Yes", 2);
+    sw_draw_string(bx + (btn_w - tw) / 2, by + 12, "Yes", 2, 255, 128, 38);
+    bx += btn_w + gap;
+
+    /* No button */
+    sw_fill_rect_a(bx, by, btn_w, RESUME_H, 77, 77, 77, 153);
+    tw = sw_string_width("No", 2);
+    sw_draw_string(bx + (btn_w - tw) / 2, by + 12, "No", 2, 255, 128, 38);
+    bx += btn_w + gap;
+
+    /* Delete button */
+    sw_fill_rect_a(bx, by, btn_w, RESUME_H, 77, 77, 77, 153);
+    tw = sw_string_width("Delete", 2);
+    sw_draw_string(bx + (btn_w - tw) / 2, by + 12, "Delete", 2, 204, 25, 25);
+}
+
+static void draw_about_popup_sw(void)
+{
+    static const char *lines[] = {
+        "EMU7800 is a 100% Claude.ai",
+        "vibe-coded port by Alan Morford.",
+        "",
+        "EMU7800 was written by",
+        "Mike Murphy.",
+        "",
+        "This port includes code from",
+        "Stella 7.0 by Bradford W. Mott,",
+        "Stephen Anthony and the",
+        "Stella Team.",
+        "",
+        "Both apps and this port are",
+        "licensed under GPL 2.0.",
+    };
+    int popup_h, popup_x, popup_y;
+    int tw, text_y, i;
+    int nlines = 13;
+
+    if (!g_about_popup_visible) return;
+
+    popup_h = POPUP_PAD + 28 + POPUP_PAD + nlines * 20 + POPUP_PAD;
+    popup_x = (FP_SCREEN_W - ABOUT_W) / 2;
+    popup_y = (FP_SCREEN_H - popup_h) / 2;
+
+    sw_fill_rect_a(0, 0, FP_SCREEN_W, FP_SCREEN_H, 0, 0, 0, 153);
+    sw_fill_rect(popup_x - 1, popup_y - 1, ABOUT_W + 2, popup_h + 2, 255, 128, 38);
+    sw_fill_rect(popup_x, popup_y, ABOUT_W, popup_h, 0, 0, 0);
+
+    {
+        char title[64];
+        snprintf(title, sizeof(title), "About EMU7800 v%s", APP_VERSION);
+        tw = sw_string_width(title, 3);
+        sw_draw_string(popup_x + (ABOUT_W - tw) / 2, popup_y + POPUP_PAD, title, 3, 255, 128, 38);
+    }
+
+    text_y = popup_y + POPUP_PAD + 28 + POPUP_PAD;
+    for (i = 0; i < nlines; i++) {
+        if (lines[i][0] == '\0') { text_y += 8; continue; }
+        tw = sw_string_width(lines[i], 2);
+        sw_draw_string(popup_x + (ABOUT_W - tw) / 2, text_y, lines[i], 2, 230, 230, 230);
+        text_y += 20;
+    }
+}
+
+static void draw_fp_aswarn_popup_sw(void)
+{
+    int popup_x, popup_y;
+    int tw, text_y, i;
+    int yes_x, no_x, btn_cy, btn_w;
+    static const char *warn_lines[] = {
+        "If you already have a save file,",
+        "this will overwrite it",
+        "automatically when exiting a game",
+        "to return to the ROM select",
+        "screen. Are you sure you want to",
+        NULL
+    };
+    const char *last_line;
+
+    if (!g_fp_aswarn_visible) return;
+
+    if (g_fp_aswarn_action == 0)
+        last_line = "enable auto-save?";
+    else
+        last_line = "disable Ask Before Saving?";
+
+    popup_x = (FP_SCREEN_W - FP_ASWARN_W) / 2;
+    popup_y = (FP_SCREEN_H - FP_ASWARN_H) / 2;
+
+    sw_fill_rect_a(0, 0, FP_SCREEN_W, FP_SCREEN_H, 0, 0, 0, 153);
+    sw_fill_rect(popup_x - 1, popup_y - 1, FP_ASWARN_W + 2, FP_ASWARN_H + 2, 255, 128, 38);
+    sw_fill_rect(popup_x, popup_y, FP_ASWARN_W, FP_ASWARN_H, 0, 0, 0);
+
+    text_y = popup_y + 16;
+    for (i = 0; warn_lines[i] != NULL; i++) {
+        tw = sw_string_width(warn_lines[i], 2);
+        sw_draw_string(popup_x + (FP_ASWARN_W - tw) / 2, text_y, warn_lines[i], 2, 255, 128, 38);
+        text_y += 18;
+    }
+    tw = sw_string_width(last_line, 2);
+    sw_draw_string(popup_x + (FP_ASWARN_W - tw) / 2, text_y, last_line, 2, 255, 128, 38);
+
+    btn_w = sw_string_width("Yes", 2) + 16;
+    btn_cy = popup_y + FP_ASWARN_H - RESUME_H - 16;
+    yes_x = popup_x + FP_ASWARN_W / 2 - btn_w - 20;
+    no_x  = popup_x + FP_ASWARN_W / 2 + 20;
+
+    sw_fill_rect_a(yes_x, btn_cy, btn_w, RESUME_H, 255, 128, 38, 204);
+    tw = sw_string_width("Yes", 2);
+    sw_draw_string(yes_x + (btn_w - tw) / 2, btn_cy + 12, "Yes", 2, 255, 255, 255);
+
+    sw_fill_rect_a(no_x, btn_cy, btn_w, RESUME_H, 77, 77, 77, 204);
+    tw = sw_string_width("No", 2);
+    sw_draw_string(no_x + (btn_w - tw) / 2, btn_cy + 12, "No", 2, 255, 128, 38);
+}
+
+static void draw_update_popup_sw(void)
+{
+    int popup_x, popup_y, popup_h;
+    int tw, text_y, i;
+    int gap, total_w, bx, by, btn_w;
+    char title[80];
+    char note_lines_buf[UPDATE_MAX_LINES][64];
+    int note_count = 0;
+
+    if (!g_update_popup_visible) return;
+
+    {
+        const char *note = updater_get_note();
+        if (note && note[0]) {
+            int max_w = UPDATE_POPUP_W - 2 * POPUP_PAD;
+            note_count = wrap_note_lines(note, max_w, note_lines_buf, UPDATE_MAX_LINES);
+        }
+    }
+
+    popup_h = update_popup_height(note_count);
+    popup_x = (FP_SCREEN_W - UPDATE_POPUP_W) / 2;
+    popup_y = (FP_SCREEN_H - popup_h) / 2;
+
+    sw_fill_rect_a(0, 0, FP_SCREEN_W, FP_SCREEN_H, 0, 0, 0, 153);
+    sw_fill_rect(popup_x - 1, popup_y - 1, UPDATE_POPUP_W + 2, popup_h + 2, 255, 128, 38);
+    sw_fill_rect(popup_x, popup_y, UPDATE_POPUP_W, popup_h, 0, 0, 0);
+
+    snprintf(title, sizeof(title), "Update Available: v%s", updater_get_version());
+    text_y = popup_y + POPUP_PAD;
+    tw = sw_string_width(title, 2);
+    sw_draw_string(popup_x + (UPDATE_POPUP_W - tw) / 2, text_y, title, 2, 255, 128, 38);
+
+    {
+        int note_y = text_y + 16 + 8;
+        for (i = 0; i < note_count; i++) {
+            sw_draw_string(popup_x + POPUP_PAD, note_y + i * UPDATE_LINE_H,
+                           note_lines_buf[i], 2, 153, 153, 153);
+        }
+    }
+
+    {
+        int w1 = sw_string_width("UPDATE", 2) + 16;
+        int w2 = sw_string_width("LATER", 2) + 16;
+        btn_w = w1 > w2 ? w1 : w2;
+        gap = 16;
+        total_w = btn_w * 2 + gap;
+        bx = popup_x + (UPDATE_POPUP_W - total_w) / 2;
+        by = popup_y + popup_h - POPUP_PAD - RESUME_H;
+
+        sw_fill_rect_a(bx, by, btn_w, RESUME_H, 77, 77, 77, 153);
+        tw = sw_string_width("UPDATE", 2);
+        sw_draw_string(bx + (btn_w - tw) / 2, by + 12, "UPDATE", 2, 255, 128, 38);
+        bx += btn_w + gap;
+
+        sw_fill_rect_a(bx, by, btn_w, RESUME_H, 77, 77, 77, 153);
+        tw = sw_string_width("LATER", 2);
+        sw_draw_string(bx + (btn_w - tw) / 2, by + 12, "LATER", 2, 255, 128, 38);
+    }
+}
+
+static void draw_recent_popup_sw(void)
+{
+    int popup_h, popup_x, popup_y;
+    int items_y, i;
+    int btn_w, btn_x, btn_y;
+    int title_w, max_text_w;
+    int show_count, list_h, total_h;
+    float max_scroll;
+    int text_h = RECENT_SCALE * 8;
+
+    if (!g_recent_popup_visible || g_recent_count == 0) return;
+
+    show_count = g_recent_count < RECENT_VISIBLE ? g_recent_count : RECENT_VISIBLE;
+    list_h = show_count * RECENT_ITEM_H;
+
+    {
+        int recent_title_h = 28;
+        popup_h = POPUP_PAD + recent_title_h + POPUP_GAP
+                + list_h
+                + POPUP_GAP + POPUP_BTN_H + POPUP_PAD;
+        popup_x = (FP_SCREEN_W - POPUP_W) / 2;
+        popup_y = (FP_SCREEN_H - popup_h) / 2;
+    }
+
+    /* Clamp scroll */
+    total_h = g_recent_count * RECENT_ITEM_H;
+    max_scroll = (float)(total_h - list_h);
+    if (max_scroll < 0) max_scroll = 0;
+    if (g_recent_scroll < 0) g_recent_scroll = 0;
+    if (g_recent_scroll > max_scroll) g_recent_scroll = max_scroll;
+
+    sw_fill_rect_a(0, 0, FP_SCREEN_W, FP_SCREEN_H, 0, 0, 0, 153);
+    sw_fill_rect(popup_x - 1, popup_y - 1, POPUP_W + 2, popup_h + 2, 255, 128, 38);
+    sw_fill_rect(popup_x, popup_y, POPUP_W, popup_h, 0, 0, 0);
+
+    title_w = sw_string_width("Recently Played", 3);
+    sw_draw_string(popup_x + (POPUP_W - title_w) / 2, popup_y + POPUP_PAD,
+                   "Recently Played", 3, 255, 128, 38);
+
+    items_y = popup_y + POPUP_PAD + 28 + POPUP_GAP;
+    max_text_w = POPUP_W - 2 * POPUP_PAD;
+
+    for (i = 0; i < g_recent_count; i++) {
+        float iy_f = items_y + i * RECENT_ITEM_H - g_recent_scroll;
+        int iy = (int)iy_f;
+        char basename[MAX_NAME_LEN];
+        const char *slash, *dot;
+        int tw;
+
+        if (iy + RECENT_ITEM_H <= items_y || iy >= items_y + list_h)
+            continue;
+
+        slash = strrchr(g_recent_paths[i], '/');
+        strncpy(basename, slash ? slash + 1 : g_recent_paths[i], MAX_NAME_LEN - 1);
+        basename[MAX_NAME_LEN - 1] = '\0';
+        dot = strrchr(basename, '.');
+        if (dot) basename[dot - basename] = '\0';
+
+        tw = sw_string_width(basename, RECENT_SCALE);
+        if (tw > max_text_w) {
+            int dots_w = sw_string_width("...", RECENT_SCALE);
+            int max_chars = (max_text_w - dots_w) / (8 * RECENT_SCALE);
+            if (max_chars < 0) max_chars = 0;
+            basename[max_chars] = '\0';
+            strncat(basename, "...", MAX_NAME_LEN - 1 - max_chars);
+        }
+
+        sw_draw_string(popup_x + POPUP_PAD, iy + (RECENT_ITEM_H - text_h) / 2,
+                       basename, RECENT_SCALE, 230, 230, 230);
+    }
+
+    /* Scrollbar */
+    if (total_h > list_h) {
+        int sb_w = 6;
+        int sb_x = popup_x + POPUP_W - POPUP_PAD - sb_w;
+        float thumb_frac = (float)list_h / total_h;
+        int thumb_h = (int)(list_h * thumb_frac);
+        int scroll_range, thumb_y;
+        if (thumb_h < 20) thumb_h = 20;
+        scroll_range = list_h - thumb_h;
+        thumb_y = items_y + (int)(scroll_range * (g_recent_scroll / max_scroll));
+
+        sw_fill_rect_a(sb_x, items_y, sb_w, list_h, 77, 77, 77, 102);
+        sw_fill_rect_a(sb_x, thumb_y, sb_w, thumb_h, 255, 128, 38, 153);
+    }
+
+    btn_w = sw_string_width("Clear List", 2) + 16;
+    btn_x = popup_x + (POPUP_W - btn_w) / 2;
+    btn_y = popup_y + popup_h - POPUP_PAD - POPUP_BTN_H;
+
+    sw_fill_rect_a(btn_x, btn_y, btn_w, POPUP_BTN_H, 77, 77, 77, 153);
+    {
+        int clr_tw = sw_string_width("Clear List", 2);
+        sw_draw_string(btn_x + (btn_w - clr_tw) / 2, btn_y + (POPUP_BTN_H - 16) / 2,
+                       "Clear List", 2, 255, 128, 38);
+    }
+}
+
+static void draw_dirpicker_popup_sw(void)
+{
+    int popup_x, popup_y;
+    int tw, text_y, list_y, i;
+    int set_w, bx, by;
+    int visible_height, total_height;
+    float max_scroll;
+    int max_text_w;
+
+    if (!g_dirpicker_popup_visible) return;
+
+    popup_x = (FP_SCREEN_W - DIRPICKER_W) / 2;
+    popup_y = (FP_SCREEN_H - DIRPICKER_H) / 2;
+
+    sw_fill_rect_a(0, 0, FP_SCREEN_W, FP_SCREEN_H, 0, 0, 0, 153);
+    sw_fill_rect(popup_x - 1, popup_y - 1, DIRPICKER_W + 2, DIRPICKER_H + 2, 255, 128, 38);
+    sw_fill_rect(popup_x, popup_y, DIRPICKER_W, DIRPICKER_H, 0, 0, 0);
+
+    text_y = popup_y + POPUP_PAD;
+    tw = sw_string_width("Choose ROM Directory", 3);
+    sw_draw_string(popup_x + (DIRPICKER_W - tw) / 2, text_y,
+                   "Choose ROM Directory", 3, 255, 128, 38);
+
+    max_text_w = DIRPICKER_W - 2 * POPUP_PAD;
+    list_y = text_y + DIRPICKER_TITLE_H + 8;
+
+    visible_height = DIRPICKER_LIST_H;
+    total_height = g_dirpicker_count * DIRPICKER_ITEM_H;
+    max_scroll = total_height - visible_height;
+    if (max_scroll < 0) max_scroll = 0;
+    if (g_dirpicker_scroll < 0) g_dirpicker_scroll = 0;
+    if (g_dirpicker_scroll > max_scroll) g_dirpicker_scroll = max_scroll;
+
+    if (g_dirpicker_count == 0) {
+        tw = sw_string_width("No subdirectories", LIST_SCALE);
+        sw_draw_string(popup_x + (DIRPICKER_W - tw) / 2,
+                       list_y + DIRPICKER_LIST_H / 2 - LIST_SCALE * 4,
+                       "No subdirectories", LIST_SCALE, 128, 128, 128);
+    } else {
+        int dp_text_h = LIST_SCALE * 8;
+        for (i = 0; i < g_dirpicker_count; i++) {
+            float iy = list_y + i * DIRPICKER_ITEM_H - g_dirpicker_scroll;
+            char disp[MAX_NAME_LEN + 4];
+
+            if (iy + DIRPICKER_ITEM_H <= list_y || iy >= list_y + DIRPICKER_LIST_H)
+                continue;
+
+            if (strcmp(g_dirpicker_dirs[i].name, "..") == 0) {
+                strncpy(disp, "../", sizeof(disp) - 1);
+            } else {
+                snprintf(disp, sizeof(disp), "%s/", g_dirpicker_dirs[i].name);
+            }
+            disp[sizeof(disp) - 1] = '\0';
+
+            tw = sw_string_width(disp, LIST_SCALE);
+            if (tw > max_text_w) {
+                int dots_w = sw_string_width("...", LIST_SCALE);
+                int max_chars = (max_text_w - dots_w) / (8 * LIST_SCALE);
+                if (max_chars < 0) max_chars = 0;
+                disp[max_chars] = '\0';
+                strcat(disp, "...");
+            }
+
+            if (strcmp(g_dirpicker_dirs[i].name, "..") == 0) {
+                sw_draw_string(popup_x + POPUP_PAD,
+                               (int)(iy + (DIRPICKER_ITEM_H - dp_text_h) / 2),
+                               disp, LIST_SCALE, 153, 153, 153);
+            } else {
+                sw_draw_string(popup_x + POPUP_PAD,
+                               (int)(iy + (DIRPICKER_ITEM_H - dp_text_h) / 2),
+                               disp, LIST_SCALE, 255, 128, 38);
+            }
+        }
+    }
+
+    /* Scrollbar */
+    if (total_height > visible_height) {
+        int sb_w = 6;
+        int sb_x = popup_x + DIRPICKER_W - POPUP_PAD - sb_w;
+        float thumb_frac = (float)visible_height / total_height;
+        int thumb_h = (int)(DIRPICKER_LIST_H * thumb_frac);
+        int scroll_range, thumb_y;
+        if (thumb_h < 20) thumb_h = 20;
+        scroll_range = DIRPICKER_LIST_H - thumb_h;
+        thumb_y = list_y + (int)(scroll_range * (g_dirpicker_scroll / max_scroll));
+
+        sw_fill_rect_a(sb_x, list_y, sb_w, DIRPICKER_LIST_H, 77, 77, 77, 102);
+        sw_fill_rect_a(sb_x, thumb_y, sb_w, thumb_h, 255, 128, 38, 153);
+    }
+
+    {
+        int set_btn_h = device_is_small() ? 46 : RESUME_H;  /* 15% larger on Pre3 */
+        set_w = sw_string_width("Set", 2) + (device_is_small() ? 24 : 16);
+        bx = popup_x + (DIRPICKER_W - set_w) / 2;
+        by = popup_y + DIRPICKER_H - POPUP_PAD - set_btn_h;
+
+        sw_fill_rect_a(bx, by, set_w, set_btn_h, 77, 77, 77, 153);
+        tw = sw_string_width("Set", 2);
+        sw_draw_string(bx + (set_w - tw) / 2, by + (set_btn_h - 16) / 2, "Set", 2, 255, 128, 38);
+    }
+}
+
+static void draw_dirask_popup_sw(void)
+{
+    int popup_x, popup_y;
+    int tw, text_y;
+    int gap, total_w, bx, by, btn_w;
+
+    if (!g_dirask_popup_visible) return;
+
+    popup_x = (FP_SCREEN_W - DIRASK_W) / 2;
+    popup_y = (FP_SCREEN_H - DIRASK_H) / 2;
+
+    sw_fill_rect_a(0, 0, FP_SCREEN_W, FP_SCREEN_H, 0, 0, 0, 153);
+    sw_fill_rect(popup_x - 1, popup_y - 1, DIRASK_W + 2, DIRASK_H + 2, 255, 128, 38);
+    sw_fill_rect(popup_x, popup_y, DIRASK_W, DIRASK_H, 0, 0, 0);
+
+    text_y = popup_y + POPUP_PAD;
+    tw = sw_string_width("Set a default ROM directory now?", 2);
+    sw_draw_string(popup_x + (DIRASK_W - tw) / 2, text_y,
+                   "Set a default ROM directory now?", 2, 255, 128, 38);
+    text_y += 20;
+    tw = sw_string_width("You can do this later in Settings.", 2);
+    sw_draw_string(popup_x + (DIRASK_W - tw) / 2, text_y,
+                   "You can do this later in Settings.", 2, 153, 153, 153);
+
+    {
+        int w1 = sw_string_width("Yes", 2) + 16;
+        int w2 = sw_string_width("Later", 2) + 16;
+        btn_w = w1 > w2 ? w1 : w2;
+        gap = 16;
+        total_w = btn_w * 2 + gap;
+        bx = popup_x + (DIRASK_W - total_w) / 2;
+        by = popup_y + DIRASK_H - POPUP_PAD - RESUME_H;
+
+        sw_fill_rect_a(bx, by, btn_w, RESUME_H, 77, 77, 77, 153);
+        tw = sw_string_width("Yes", 2);
+        sw_draw_string(bx + (btn_w - tw) / 2, by + 12, "Yes", 2, 255, 128, 38);
+        bx += btn_w + gap;
+
+        sw_fill_rect_a(bx, by, btn_w, RESUME_H, 77, 77, 77, 153);
+        tw = sw_string_width("Later", 2);
+        sw_draw_string(bx + (btn_w - tw) / 2, by + 12, "Later", 2, 255, 128, 38);
+    }
+}
+
+static void draw_delete_confirm_popup_sw(void)
+{
+    int popup_x, popup_y;
+    int tw, text_y;
+    int gap, total_w, bx, by, btn_w;
+
+    if (!g_delete_confirm_visible) return;
+
+    popup_x = (FP_SCREEN_W - SAVE_POPUP_W) / 2;
+    popup_y = (FP_SCREEN_H - SAVE_POPUP_H) / 2;
+
+    sw_fill_rect_a(0, 0, FP_SCREEN_W, FP_SCREEN_H, 0, 0, 0, 153);
+    sw_fill_rect(popup_x - 1, popup_y - 1, SAVE_POPUP_W + 2, SAVE_POPUP_H + 2, 255, 128, 38);
+    sw_fill_rect(popup_x, popup_y, SAVE_POPUP_W, SAVE_POPUP_H, 0, 0, 0);
+
+    text_y = popup_y + POPUP_PAD;
+    tw = sw_string_width("Are you sure you want to", 2);
+    sw_draw_string(popup_x + (SAVE_POPUP_W - tw) / 2, text_y,
+                   "Are you sure you want to", 2, 255, 128, 38);
+    text_y += 20;
+    tw = sw_string_width("delete the save file?", 2);
+    sw_draw_string(popup_x + (SAVE_POPUP_W - tw) / 2, text_y,
+                   "delete the save file?", 2, 255, 128, 38);
+
+    {
+        int w1 = sw_string_width("Yes", 2) + 16;
+        int w2 = sw_string_width("No", 2) + 16;
+        btn_w = w1 > w2 ? w1 : w2;
+        gap = 16;
+        total_w = btn_w * 2 + gap;
+        bx = popup_x + (SAVE_POPUP_W - total_w) / 2;
+        by = popup_y + POPUP_PAD + 40 + 16;
+
+        sw_fill_rect_a(bx, by, btn_w, RESUME_H, 77, 77, 77, 153);
+        tw = sw_string_width("Yes", 2);
+        sw_draw_string(bx + (btn_w - tw) / 2, by + 12, "Yes", 2, 255, 128, 38);
+        bx += btn_w + gap;
+
+        sw_fill_rect_a(bx, by, btn_w, RESUME_H, 77, 77, 77, 153);
+        tw = sw_string_width("No", 2);
+        sw_draw_string(bx + (btn_w - tw) / 2, by + 12, "No", 2, 255, 128, 38);
+    }
+}
+
+static void filepicker_draw_sw(void)
+{
+    int total_height, visible_height;
+    int i, item_y;
+    float max_scroll;
+    int has_dotdot, scroll_start, scroll_area_top, scroll_count;
+
+    sw_clear(0, 0, 0);
+
+    /* Title "EMU7800" (right-aligned, cycling rainbow) */
+    {
+        static const uint8_t colors[][3] = {
+            {255, 0, 0}, {255, 128, 0}, {255, 255, 0},
+            {0, 204, 0}, {0, 102, 255}, {74, 0, 130}, {143, 0, 255}
+        };
+        static Uint32 last_tick = 0;
+        static int color_step = 0;
+        Uint32 now = SDL_GetTicks();
+        int tw = sw_string_width("EMU7800", TITLE_SCALE);
+        int cw = tw / 7;
+        int tx = FP_SCREEN_W - MARGIN_X - tw;
+        int ci;
+        char ch[2] = {0, 0};
+
+        if (last_tick == 0) last_tick = now;
+        if (now - last_tick >= 1000) {
+            color_step = (color_step + 1) % 7;
+            last_tick = now;
+        }
+
+        for (i = 0; i < 7; i++) {
+            ci = (i + color_step) % 7;
+            ch[0] = "EMU7800"[i];
+            sw_draw_string(tx + i * cw, TITLE_Y, ch, TITLE_SCALE,
+                           colors[ci][0], colors[ci][1], colors[ci][2]);
+        }
+    }
+
+    /* Auto-show update popup once when update is found */
+    if (updater_has_update() && !g_update_auto_shown && !g_update_popup_visible && !g_dirask_popup_visible) {
+        g_update_auto_shown = 1;
+        g_update_popup_visible = 1;
+    }
+
+    /* Resume button */
+    {
+        int next_y = RESUME_Y;
+
+        if (g_has_last_rom) {
+            const char *slash;
+            const char *romname;
+            const char *dot;
+            char basename[MAX_NAME_LEN];
+            int btn_w, namelen;
+
+            btn_w = sw_string_width("RESUME", 2) + 16;
+
+            sw_fill_rect_a(RESUME_X, next_y, btn_w, RESUME_H, 77, 77, 77, 153);
+            sw_draw_string(RESUME_X + 8, next_y + (RESUME_H - 16) / 2, "RESUME", 2, 255, 128, 38);
+
+            /* ROM filename */
+            slash = strrchr(g_last_rom_path, '/');
+            romname = slash ? slash + 1 : g_last_rom_path;
+            strncpy(basename, romname, MAX_NAME_LEN - 1);
+            basename[MAX_NAME_LEN - 1] = '\0';
+            dot = strrchr(basename, '.');
+            if (dot) {
+                namelen = dot - basename;
+                basename[namelen] = '\0';
+            }
+            {
+                int name_x = RESUME_X + btn_w + 10;
+                int max_w = FP_SCREEN_W / 2 - name_x;
+                int name_w = sw_string_width(basename, 2);
+                if (name_w > max_w && max_w > 0) {
+                    int dots_w = sw_string_width("...", 2);
+                    int max_chars = (max_w - dots_w) / (8 * 2);
+                    if (max_chars < 0) max_chars = 0;
+                    basename[max_chars] = '\0';
+                    strncat(basename, "...", MAX_NAME_LEN - 1 - max_chars);
+                }
+                sw_draw_string(name_x, next_y + (RESUME_H - 16) / 2, basename, 2, 230, 230, 230);
+            }
+            next_y += RESUME_H + 4;
+        }
+
+        /* RECENT button */
+        if (g_recent_count > 1) {
+            int btn_w = sw_string_width("RECENT", 2) + 16;
+            sw_fill_rect_a(RESUME_X, next_y, btn_w, RESUME_H, 77, 77, 77, 153);
+            sw_draw_string(RESUME_X + 8, next_y + (RESUME_H - 16) / 2, "RECENT", 2, 255, 128, 38);
+            next_y += RESUME_H + 4;
+        }
+
+    }
+
+    /* Gear icon (right-aligned, below title — same position as TouchPad) */
+    {
+        int gear_x = FP_SCREEN_W - MARGIN_X - GEAR_IMG_W;
+        int gear_y = TITLE_Y + TITLE_SCALE * 8 + 2;
+        sw_blit_rgba(gear_img_data, GEAR_IMG_W, GEAR_IMG_H, GEAR_TEX_SIZE,
+                     gear_x, gear_y, GEAR_IMG_W, GEAR_IMG_H);
+
+        if (updater_has_update() && g_update_later) {
+            float p = update_pulse();
+            int update_w = sw_string_width("Update!", 2);
+            int update_x = gear_x - 4 - update_w;
+            int update_y = gear_y + (GEAR_IMG_H - 16) / 2;
+            sw_draw_string(update_x, update_y, "Update!", 2,
+                           (uint8_t)(255 * p), (uint8_t)(128 * p), (uint8_t)(38 * p));
+        }
+    }
+
+    /* Separator line */
+    {
+        int sep_y = LIST_TOP - 6;
+        sw_fill_rect(MARGIN_X, sep_y, FP_SCREEN_W - 2 * MARGIN_X, 2, 77, 77, 102);
+    }
+
+    if (g_file_count == 0) {
+        int nw = sw_string_width("Directory is empty", 2);
+        sw_draw_string((FP_SCREEN_W - nw) / 2, FP_SCREEN_H / 2 - 8, "Directory is empty", 2, 204, 102, 102);
+        draw_update_popup_sw();
+        draw_dirpicker_popup_sw();
+        draw_dirask_popup_sw();
+        draw_recent_popup_sw();
+        draw_delete_confirm_popup_sw();
+        draw_notfound_popup_sw();
+        draw_settings_popup_sw();
+        draw_fp_aswarn_popup_sw();
+        draw_about_popup_sw();
+        draw_save_popup_sw();
+        sw_flip();
+        return;
+    }
+
+    /* Pinned ".." entry */
+    has_dotdot = (g_file_count > 0 && strcmp(g_files[0].name, "..") == 0);
+    scroll_start = has_dotdot ? 1 : 0;
+    scroll_area_top = has_dotdot ? (LIST_TOP + ITEM_HEIGHT) : LIST_TOP;
+    scroll_count = g_file_count - scroll_start;
+
+    if (has_dotdot) {
+        int dd_y = LIST_TOP + (ITEM_HEIGHT - LIST_SCALE * 8) / 2;
+        sw_draw_string(MARGIN_X, dd_y, "../", LIST_SCALE, 153, 153, 153);
+    }
+
+    /* Clamp scroll */
+    visible_height = LIST_BOTTOM - scroll_area_top;
+    total_height = scroll_count * ITEM_HEIGHT;
+    max_scroll = total_height - visible_height;
+    if (max_scroll < 0) max_scroll = 0;
+    if (g_scroll_offset < 0) g_scroll_offset = 0;
+    if (g_scroll_offset > max_scroll) g_scroll_offset = max_scroll;
+
+    /* Draw scrollable file list */
+    for (i = scroll_start; i < g_file_count; i++) {
+        float iy = scroll_area_top + (i - scroll_start) * ITEM_HEIGHT - g_scroll_offset;
+
+        if (iy < scroll_area_top || iy > LIST_BOTTOM) continue;
+        item_y = (int)(iy + (ITEM_HEIGHT - LIST_SCALE * 8) / 2);
+
+        {
+            char disp[MAX_NAME_LEN + 4];
+            int max_w = SCROLLBAR_X - 8 - MARGIN_X;
+            int tw;
+
+            if (g_files[i].is_dir) {
+                snprintf(disp, sizeof(disp), "%s/", g_files[i].name);
+            } else {
+                strncpy(disp, g_files[i].name, MAX_NAME_LEN + 3);
+                disp[MAX_NAME_LEN + 3] = '\0';
+            }
+
+            tw = sw_string_width(disp, LIST_SCALE);
+            if (tw > max_w) {
+                int dots_w = sw_string_width("...", LIST_SCALE);
+                int max_chars = (max_w - dots_w) / (8 * LIST_SCALE);
+                if (max_chars < 0) max_chars = 0;
+                disp[max_chars] = '\0';
+                strcat(disp, "...");
+            }
+
+            if (g_files[i].is_dir) {
+                sw_draw_string(MARGIN_X, item_y, disp, LIST_SCALE, 255, 128, 38);
+            } else {
+                const char *ext = strrchr(g_files[i].name, '.');
+                if (ext && strcasecmp(ext, ".sav") == 0) {
+                    sw_draw_string(MARGIN_X, item_y, disp, LIST_SCALE, 179, 77, 255);
+                } else {
+                    sw_draw_string(MARGIN_X, item_y, disp, LIST_SCALE, 255, 255, 255);
+                }
+            }
+        }
+    }
+
+    /* Scrollbar */
+    if (total_height > visible_height) {
+        int bar_h = visible_height * visible_height / total_height;
+        int bar_y;
+        if (bar_h < 20) bar_h = 20;
+        bar_y = scroll_area_top + (int)(g_scroll_offset * (visible_height - bar_h) / max_scroll);
+        sw_fill_rect_a(SCROLLBAR_X - SCROLLBAR_W, bar_y, SCROLLBAR_W, bar_h, 128, 128, 128, 128);
+    }
+
+    /* Animated logo background (centered in list area, dimmed) */
+    {
+        Uint32 now = SDL_GetTicks();
+        int logo_draw_w = LOGO_IMG_W * LOGO_SCALE;
+        int logo_draw_h = LOGO_IMG_H * LOGO_SCALE;
+        int logo_x = (FP_SCREEN_W - logo_draw_w) / 2;
+        int logo_y = LIST_TOP + (LIST_BOTTOM - LIST_TOP - logo_draw_h) / 2;
+
+        if (g_logo_last_tick == 0) g_logo_last_tick = now;
+        if (now - g_logo_last_tick >= logo_frame_delays[g_logo_frame]) {
+            g_logo_frame = (g_logo_frame + 1) % LOGO_FRAME_COUNT;
+            g_logo_last_tick = now;
+        }
+
+        sw_blit_rgb565_a(logo_frame_data[g_logo_frame],
+                         LOGO_IMG_W, LOGO_IMG_H, LOGO_TEX_SIZE,
+                         logo_x, logo_y, logo_draw_w, logo_draw_h, 77);
+    }
+
+    /* Asteroids image button (bottom-right) */
+    sw_blit_rgb565(asteroids_img_data,
+                   ASTEROIDS_IMG_W, ASTEROIDS_IMG_H, ASTEROIDS_IMG_W,
+                   AST_BTN_X, AST_BTN_Y, AST_BTN_W, AST_BTN_H);
+
+    /* Popups */
+    draw_update_popup_sw();
+    draw_dirpicker_popup_sw();
+    draw_dirask_popup_sw();
+    draw_recent_popup_sw();
+    draw_delete_confirm_popup_sw();
+    draw_notfound_popup_sw();
+    draw_settings_popup_sw();
+    draw_fp_aswarn_popup_sw();
+    draw_about_popup_sw();
+    draw_save_popup_sw();
+
+    sw_flip();
+}
+
 void filepicker_draw(void)
 {
     int total_height, visible_height;
     int i, item_y;
     float max_scroll;
     int has_dotdot, scroll_start, scroll_area_top, scroll_count;
+
+    /* Pre3: use software rendering path */
+    if (!device_has_gl()) {
+        filepicker_draw_sw();
+        return;
+    }
 
     /* Clear screen to black */
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
@@ -1770,10 +2810,10 @@ void filepicker_draw(void)
         Uint32 now = SDL_GetTicks();
         float logo_u = (float)LOGO_IMG_W / (float)LOGO_TEX_SIZE;
         float logo_v = (float)LOGO_IMG_H / (float)LOGO_TEX_SIZE;
-        int logo_draw_w = LOGO_IMG_W * 3;
-        int logo_draw_h = LOGO_IMG_H * 3;
-        int logo_x = (SCREEN_WIDTH - logo_draw_w) / 2;
-        int logo_y = (SCREEN_HEIGHT - logo_draw_h) / 2;
+        int logo_draw_w = LOGO_IMG_W * LOGO_SCALE;
+        int logo_draw_h = LOGO_IMG_H * LOGO_SCALE;
+        int logo_x = (FP_SCREEN_W - logo_draw_w) / 2;
+        int logo_y = (FP_SCREEN_H - logo_draw_h) / 2;
         GLfloat logo_verts[] = {
             logo_x,                logo_y,
             logo_x + logo_draw_w,  logo_y,
@@ -1829,9 +2869,9 @@ void filepicker_draw(void)
         static Uint32 last_tick = 0;
         static int color_step = 0;
         Uint32 now = SDL_GetTicks();
-        int tw = font_string_width(title, 5);
+        int tw = font_string_width(title, TITLE_SCALE);
         int cw = tw / 7;
-        float tx = (float)(SCREEN_WIDTH - MARGIN_X - tw);
+        float tx = (float)(FP_SCREEN_W - MARGIN_X - tw);
         int i, ci;
         char ch[2] = {0, 0};
 
@@ -1844,15 +2884,15 @@ void filepicker_draw(void)
         for (i = 0; i < 7; i++) {
             ci = (i + color_step) % 7;
             ch[0] = title[i];
-            font_draw_string(ch, tx + i * cw, TITLE_Y, 5,
+            font_draw_string(ch, tx + i * cw, TITLE_Y, TITLE_SCALE,
                              colors[ci][0], colors[ci][1], colors[ci][2], 1.0f);
         }
     }
 
     /* Gear icon (right-aligned under title, replaces "Settings" text) */
     {
-        int gear_x = SCREEN_WIDTH - MARGIN_X - GEAR_IMG_W;
-        int gear_y = TITLE_Y + 5 * 8 + 2;  /* just below scale-5 title */
+        int gear_x = FP_SCREEN_W - MARGIN_X - GEAR_IMG_W;
+        int gear_y = TITLE_Y + TITLE_SCALE * 8 + 2;  /* just below scale-5 title */
         float u_max = (float)GEAR_IMG_W / GEAR_TEX_SIZE;
         float v_max = (float)GEAR_IMG_H / GEAR_TEX_SIZE;
         GLfloat gverts[8], gtc[8];
@@ -1883,20 +2923,23 @@ void filepicker_draw(void)
     }
 
     /* Auto-show update popup once when update is found */
-    if (updater_has_update() && !g_update_auto_shown && !g_update_popup_visible) {
+    if (updater_has_update() && !g_update_auto_shown && !g_update_popup_visible && !g_dirask_popup_visible) {
         g_update_auto_shown = 1;
         g_update_popup_visible = 1;
     }
 
     /* "Update!" text link (to the left of gear icon — only after LATER) */
     if (updater_has_update() && g_update_later) {
-        int gear_x = SCREEN_WIDTH - MARGIN_X - GEAR_IMG_W;
-        int gear_y = TITLE_Y + 5 * 8 + 2;
+        int gear_x = FP_SCREEN_W - MARGIN_X - GEAR_IMG_W;
+        int gear_y = TITLE_Y + TITLE_SCALE * 8 + 2;
         int update_w = font_string_width("Update!", 2);
         int update_x = gear_x - 4 - update_w;
         int update_y = gear_y + (GEAR_IMG_H - 16) / 2;  /* vertically centered with gear */
-        font_draw_string("Update!", update_x, update_y, 2,
-                         1.0f, 0.5f, 0.15f, 1.0f);
+        {
+            float p = update_pulse();
+            font_draw_string("Update!", update_x, update_y, 2,
+                             p, 0.5f * p, 0.15f * p, 1.0f);
+        }
     }
 
     /* Resume button (top-left, only if last ROM is set) */
@@ -1936,7 +2979,7 @@ void filepicker_draw(void)
         /* Truncate with "..." if it would go past screen center */
         {
             int name_x = RESUME_X + btn_w + 10;
-            int max_w = SCREEN_WIDTH / 2 - name_x;
+            int max_w = FP_SCREEN_W / 2 - name_x;
             int name_w = font_string_width(basename, 2);
             if (name_w > max_w && max_w > 0) {
                 int dots_w = font_string_width("...", 2);
@@ -1968,14 +3011,14 @@ void filepicker_draw(void)
 
     /* Separator line (below gear icon, or below RECENT button when visible) */
     {
-        int gear_bottom = TITLE_Y + 5 * 8 + 2 + GEAR_IMG_H;  /* gear icon bottom */
+        int gear_bottom = TITLE_Y + TITLE_SCALE * 8 + 2 + GEAR_IMG_H;  /* gear icon bottom */
         int sep_y = gear_bottom + 2;
         if (g_recent_count > 1) {
             int recent_bottom = RESUME_Y + RESUME_H + 4 + RESUME_H;
             if (recent_bottom + 6 > sep_y) sep_y = recent_bottom + 6;
         }
         glDisable(GL_TEXTURE_2D);
-        draw_rect(MARGIN_X, sep_y, SCREEN_WIDTH - 2 * MARGIN_X, 2,
+        draw_rect(MARGIN_X, sep_y, FP_SCREEN_W - 2 * MARGIN_X, 2,
                   0.3f, 0.3f, 0.4f, 1.0f);
     }
 
@@ -1983,7 +3026,7 @@ void filepicker_draw(void)
         /* No files message */
         int nw = font_string_width("Directory is empty", 2);
         font_draw_string("Directory is empty",
-                         (SCREEN_WIDTH - nw) / 2.0f, SCREEN_HEIGHT / 2 - 8, 2,
+                         (FP_SCREEN_W - nw) / 2.0f, FP_SCREEN_H / 2 - 8, 2,
                          0.8f, 0.4f, 0.4f, 1.0f);
         draw_recent_popup();
         draw_settings_popup();
@@ -1991,6 +3034,7 @@ void filepicker_draw(void)
         draw_about_popup();
         draw_save_popup();
         draw_delete_confirm_popup();
+        draw_notfound_popup();
         draw_dirask_popup();
         draw_dirpicker_popup();
         draw_update_popup();
@@ -2098,6 +3142,7 @@ void filepicker_draw(void)
     draw_about_popup();
     draw_save_popup();
     draw_delete_confirm_popup();
+    draw_notfound_popup();
     draw_dirask_popup();
     draw_dirpicker_popup();
     draw_update_popup();
@@ -2118,6 +3163,8 @@ void filepicker_touch_down(int x, int y)
     g_touch_moved = 0;
     g_dirpicker_touch_moved = 0;
     g_dirpicker_touch_active = 0;
+    g_recent_touch_moved = 0;
+    g_recent_touch_active = 0;
     g_scroll_at_touch_start = g_scroll_offset;
 }
 
@@ -2149,8 +3196,23 @@ void filepicker_touch_move(int x, int y)
         return;
     }
 
+    /* Recent popup scroll handling */
+    if (g_recent_popup_visible) {
+        if (g_touch_moved) {
+            if (!g_recent_touch_active) {
+                g_recent_touch_active = 1;
+                g_recent_touch_start_y = g_touch_start_y;
+                g_recent_scroll_at_start = g_recent_scroll;
+                g_recent_touch_moved = 0;
+            }
+            g_recent_touch_moved = 1;
+            g_recent_scroll = g_recent_scroll_at_start - (y - g_recent_touch_start_y);
+        }
+        return;
+    }
+
     /* Don't scroll file list when popup is visible */
-    if (g_dirask_popup_visible || g_recent_popup_visible || g_about_popup_visible || g_save_popup_visible || g_delete_confirm_visible || g_settings_popup_visible || g_fp_aswarn_visible || g_update_popup_visible) return;
+    if (g_dirask_popup_visible || g_about_popup_visible || g_save_popup_visible || g_delete_confirm_visible || g_settings_popup_visible || g_fp_aswarn_visible || g_update_popup_visible || g_notfound_visible) return;
 
     /* Scroll */
     if (g_touch_moved) {
@@ -2175,6 +3237,12 @@ int filepicker_touch_up(int x, int y)
         return 0;
     }
 
+    /* Handle file-not-found popup (tap anywhere dismisses) */
+    if (g_notfound_visible) {
+        dismiss_notfound();
+        return 0;
+    }
+
     /* Handle update popup touches */
     if (g_update_popup_visible) {
         char ul[UPDATE_MAX_LINES][64];
@@ -2187,8 +3255,8 @@ int filepicker_touch_up(int x, int y)
                 uc = wrap_note_lines(note, UPDATE_POPUP_W - 2 * POPUP_PAD, ul, UPDATE_MAX_LINES);
         }
         popup_h = update_popup_height(uc);
-        popup_x = (SCREEN_WIDTH - UPDATE_POPUP_W) / 2;
-        popup_y = (SCREEN_HEIGHT - popup_h) / 2;
+        popup_x = (FP_SCREEN_W - UPDATE_POPUP_W) / 2;
+        popup_y = (FP_SCREEN_H - popup_h) / 2;
 
         if (x >= popup_x && x < popup_x + UPDATE_POPUP_W &&
             y >= popup_y && y < popup_y + popup_h) {
@@ -2226,8 +3294,8 @@ int filepicker_touch_up(int x, int y)
 
     /* Handle directory picker popup touches (highest priority — has scrolling list) */
     if (g_dirpicker_popup_visible) {
-        int popup_x = (SCREEN_WIDTH - DIRPICKER_W) / 2;
-        int popup_y = (SCREEN_HEIGHT - DIRPICKER_H) / 2;
+        int popup_x = (FP_SCREEN_W - DIRPICKER_W) / 2;
+        int popup_y = (FP_SCREEN_H - DIRPICKER_H) / 2;
 
         if (x >= popup_x && x < popup_x + DIRPICKER_W &&
             y >= popup_y && y < popup_y + DIRPICKER_H) {
@@ -2276,8 +3344,8 @@ int filepicker_touch_up(int x, int y)
 
     /* Handle directory ask popup touches */
     if (g_dirask_popup_visible) {
-        int popup_x = (SCREEN_WIDTH - DIRASK_W) / 2;
-        int popup_y = (SCREEN_HEIGHT - DIRASK_H) / 2;
+        int popup_x = (FP_SCREEN_W - DIRASK_W) / 2;
+        int popup_y = (FP_SCREEN_H - DIRASK_H) / 2;
 
         if (x >= popup_x && x < popup_x + DIRASK_W &&
             y >= popup_y && y < popup_y + DIRASK_H) {
@@ -2320,12 +3388,16 @@ int filepicker_touch_up(int x, int y)
     /* Handle recent popup touches (highest priority) */
     if (g_recent_popup_visible) {
         int popup_h, popup_x, popup_y;
-        int recent_title_h = 28;  /* scale 3 title height */
+        int recent_title_h = 28;
+        int show_count = g_recent_count < RECENT_VISIBLE ? g_recent_count : RECENT_VISIBLE;
+        int list_h = show_count * RECENT_ITEM_H;
         popup_h = POPUP_PAD + recent_title_h + POPUP_GAP
-                + g_recent_count * POPUP_ITEM_H
+                + list_h
                 + POPUP_GAP + POPUP_BTN_H + POPUP_PAD;
-        popup_x = (SCREEN_WIDTH - POPUP_W) / 2;
-        popup_y = (SCREEN_HEIGHT - popup_h) / 2;
+        popup_x = (FP_SCREEN_W - POPUP_W) / 2;
+        popup_y = (FP_SCREEN_H - popup_h) / 2;
+
+        g_recent_touch_active = 0;
 
         if (x >= popup_x && x < popup_x + POPUP_W &&
             y >= popup_y && y < popup_y + popup_h) {
@@ -2342,12 +3414,19 @@ int filepicker_touch_up(int x, int y)
                     return 0;
                 }
             }
-            /* Check item taps */
-            {
+            /* Check item taps (only if not scrolling) */
+            if (!g_recent_touch_moved) {
                 int items_y = popup_y + POPUP_PAD + recent_title_h + POPUP_GAP;
-                if (y >= items_y && y < items_y + g_recent_count * POPUP_ITEM_H) {
-                    int item_idx = (y - items_y) / POPUP_ITEM_H;
+                if (y >= items_y && y < items_y + list_h) {
+                    float tap_offset = (y - items_y) + g_recent_scroll;
+                    int item_idx = (int)(tap_offset / RECENT_ITEM_H);
                     if (item_idx >= 0 && item_idx < g_recent_count) {
+                        if (access(g_recent_paths[item_idx], F_OK) != 0) {
+                            g_recent_popup_visible = 0;
+                            g_notfound_visible = 1;
+                            g_notfound_recent_idx = item_idx;
+                            return 0;
+                        }
                         strncpy(g_last_rom_path, g_recent_paths[item_idx], MAX_PATH_LEN - 1);
                         g_last_rom_path[MAX_PATH_LEN - 1] = '\0';
                         g_last_rom_type = g_recent_types[item_idx];
@@ -2368,8 +3447,8 @@ int filepicker_touch_up(int x, int y)
 
     /* Handle auto-save warning popup touches (filepicker — higher priority than settings) */
     if (g_fp_aswarn_visible) {
-        int popup_x = (SCREEN_WIDTH - FP_ASWARN_W) / 2;
-        int popup_y = (SCREEN_HEIGHT - FP_ASWARN_H) / 2;
+        int popup_x = (FP_SCREEN_W - FP_ASWARN_W) / 2;
+        int popup_y = (FP_SCREEN_H - FP_ASWARN_H) / 2;
         int btn_cy = popup_y + FP_ASWARN_H - FP_ASWARN_BTN_H - 16;
         int yes_x = popup_x + FP_ASWARN_W / 2 - FP_ASWARN_BTN_W - 20;
         int no_x  = popup_x + FP_ASWARN_W / 2 + 20;
@@ -2394,8 +3473,8 @@ int filepicker_touch_up(int x, int y)
 
     /* Handle settings popup touches */
     if (g_settings_popup_visible) {
-        int popup_x = (SCREEN_WIDTH - SETTINGS_POPUP_W) / 2;
-        int popup_y = (SCREEN_HEIGHT - SETTINGS_POPUP_H) / 2;
+        int popup_x = (FP_SCREEN_W - SETTINGS_POPUP_W) / 2;
+        int popup_y = (FP_SCREEN_H - SETTINGS_POPUP_H) / 2;
 
         if (x >= popup_x && x < popup_x + SETTINGS_POPUP_W &&
             y >= popup_y && y < popup_y + SETTINGS_POPUP_H) {
@@ -2522,8 +3601,8 @@ int filepicker_touch_up(int x, int y)
 
     /* Handle delete confirmation popup touches */
     if (g_delete_confirm_visible) {
-        int popup_x = (SCREEN_WIDTH - SAVE_POPUP_W) / 2;
-        int popup_y = (SCREEN_HEIGHT - SAVE_POPUP_H) / 2;
+        int popup_x = (FP_SCREEN_W - SAVE_POPUP_W) / 2;
+        int popup_y = (FP_SCREEN_H - SAVE_POPUP_H) / 2;
 
         if (x >= popup_x && x < popup_x + SAVE_POPUP_W &&
             y >= popup_y && y < popup_y + SAVE_POPUP_H) {
@@ -2562,8 +3641,8 @@ int filepicker_touch_up(int x, int y)
 
     /* Handle save popup touches */
     if (g_save_popup_visible) {
-        int popup_x = (SCREEN_WIDTH - SAVE_POPUP_W) / 2;
-        int popup_y = (SCREEN_HEIGHT - SAVE_POPUP_H) / 2;
+        int popup_x = (FP_SCREEN_W - SAVE_POPUP_W) / 2;
+        int popup_y = (FP_SCREEN_H - SAVE_POPUP_H) / 2;
 
         if (x >= popup_x && x < popup_x + SAVE_POPUP_W &&
             y >= popup_y && y < popup_y + SAVE_POPUP_H) {
@@ -2616,6 +3695,11 @@ int filepicker_touch_up(int x, int y)
     if (g_has_last_rom &&
         x >= RESUME_X && x < RESUME_X + font_string_width("RESUME", 2) + 16 &&
         y >= RESUME_Y && y < RESUME_Y + RESUME_H) {
+        if (access(g_last_rom_path, F_OK) != 0) {
+            g_notfound_visible = 1;
+            g_notfound_recent_idx = -1;
+            return 0;
+        }
         g_resume_selected = 1;
         g_art_selected = 0;
         return check_save_popup();
@@ -2624,33 +3708,55 @@ int filepicker_touch_up(int x, int y)
     /* Check RECENT button tap */
     if (g_recent_count > 1) {
         int btn_w = font_string_width("RECENT", 2) + 16;
-        int btn_y = RESUME_Y + RESUME_H + 4;
+        int btn_y = g_has_last_rom ? RESUME_Y + RESUME_H + 4 : RESUME_Y;
         if (x >= RESUME_X && x < RESUME_X + btn_w &&
             y >= btn_y && y < btn_y + RESUME_H) {
             g_recent_popup_visible = 1;
+            g_recent_scroll = 0.0f;
             return 0;
         }
     }
 
-    /* Check gear icon tap (opens Settings popup) */
+    /* Check gear icon / Settings button tap (opens Settings popup) */
     {
-        int gear_x = SCREEN_WIDTH - MARGIN_X - GEAR_IMG_W;
-        int gear_y = TITLE_Y + 5 * 8 + 2;
-        if (x >= gear_x && x < gear_x + GEAR_IMG_W &&
-            y >= gear_y && y < gear_y + GEAR_IMG_H) {
+        int hit_w, hit_h, hit_x, hit_y;
+        if (device_is_small()) {
+            /* Gear icon, same position as TouchPad */
+            hit_x = FP_SCREEN_W - MARGIN_X - GEAR_IMG_W;
+            hit_y = TITLE_Y + TITLE_SCALE * 8 + 2;
+            hit_w = GEAR_IMG_W;
+            hit_h = GEAR_IMG_H;
+        } else {
+            hit_x = FP_SCREEN_W - MARGIN_X - GEAR_IMG_W;
+            hit_y = TITLE_Y + TITLE_SCALE * 8 + 2;
+            hit_w = GEAR_IMG_W;
+            hit_h = GEAR_IMG_H;
+        }
+        if (x >= hit_x && x < hit_x + hit_w &&
+            y >= hit_y && y < hit_y + hit_h) {
             g_settings_popup_visible = 1;
             return 0;
         }
     }
 
-    /* Check "Update!" text tap (to the left of gear, only after LATER) */
+    /* Check "Update!" text tap (to the right of Settings on Pre3, left of gear on TouchPad) */
     if (updater_has_update() && g_update_later) {
-        int gear_x = SCREEN_WIDTH - MARGIN_X - GEAR_IMG_W;
-        int gear_y = TITLE_Y + 5 * 8 + 2;
-        int update_w = font_string_width("Update!", 2);
-        int update_h = 2 * 8;
-        int update_x = gear_x - 4 - update_w;
-        int update_y = gear_y + (GEAR_IMG_H - 16) / 2;
+        int update_w, update_h, update_x, update_y;
+        if (device_is_small()) {
+            int gear_x = FP_SCREEN_W - MARGIN_X - GEAR_IMG_W;
+            int gear_y = TITLE_Y + TITLE_SCALE * 8 + 2;
+            update_w = sw_string_width("Update!", 2);
+            update_h = 16;
+            update_x = gear_x - 4 - update_w;
+            update_y = gear_y + (GEAR_IMG_H - 16) / 2;
+        } else {
+            int gear_x = FP_SCREEN_W - MARGIN_X - GEAR_IMG_W;
+            int gear_y = TITLE_Y + TITLE_SCALE * 8 + 2;
+            update_w = font_string_width("Update!", 2);
+            update_h = 16;
+            update_x = gear_x - 4 - update_w;
+            update_y = gear_y + (GEAR_IMG_H - 16) / 2;
+        }
         if (x >= update_x && x < update_x + update_w &&
             y >= update_y && y < update_y + update_h) {
             g_update_popup_visible = 1;
@@ -2773,11 +3879,17 @@ int filepicker_key_down(int sym)
         return 0;
     }
 
-    /* Recent popup: 1-9 selects item */
+    /* Recent popup: 1-9 selects item, ESC falls through to dismiss */
     if (g_recent_popup_visible) {
         if (sym >= SDLK_1 && sym <= SDLK_9) {
             int idx = sym - SDLK_1;
             if (idx < g_recent_count) {
+                if (access(g_recent_paths[idx], F_OK) != 0) {
+                    g_recent_popup_visible = 0;
+                    g_notfound_visible = 1;
+                    g_notfound_recent_idx = idx;
+                    return 0;
+                }
                 strncpy(g_last_rom_path, g_recent_paths[idx], MAX_PATH_LEN - 1);
                 g_last_rom_path[MAX_PATH_LEN - 1] = '\0';
                 g_last_rom_type = g_recent_types[idx];
@@ -2787,6 +3899,25 @@ int filepicker_key_down(int sym)
                 g_recent_popup_visible = 0;
                 return check_save_popup();
             }
+        }
+        if (sym != 27) return 0;
+    }
+
+    /* Back gesture / ESC: dismiss popup or navigate to parent */
+    if (sym == 27) {  /* ESC / back gesture */
+        if (g_notfound_visible)        { dismiss_notfound();             return 0; }
+        if (g_about_popup_visible)     { g_about_popup_visible = 0;     return 0; }
+        if (g_delete_confirm_visible)  { g_delete_confirm_visible = 0;  return 0; }
+        if (g_fp_aswarn_visible)       { g_fp_aswarn_visible = 0;       return 0; }
+        if (g_save_popup_visible)      { g_save_popup_visible = 0;      return 0; }
+        if (g_update_popup_visible)    { g_update_popup_visible = 0;    return 0; }
+        if (g_dirask_popup_visible)    { g_dirask_popup_visible = 0;    return 0; }
+        if (g_dirpicker_popup_visible) { g_dirpicker_popup_visible = 0; return 0; }
+        if (g_settings_popup_visible)  { g_settings_popup_visible = 0;  return 0; }
+        if (g_recent_popup_visible)    { g_recent_popup_visible = 0;    return 0; }
+        /* No popup — go up a directory */
+        if (g_file_count > 0 && strcmp(g_files[0].name, "..") == 0) {
+            filepicker_scan(g_files[0].path);
         }
         return 0;
     }
@@ -2801,12 +3932,18 @@ int filepicker_key_down(int sym)
 
     /* Main filepicker screen: 1=Resume, 2=Recent */
     if (sym == SDLK_1 && g_has_last_rom) {
+        if (access(g_last_rom_path, F_OK) != 0) {
+            g_notfound_visible = 1;
+            g_notfound_recent_idx = -1;
+            return 0;
+        }
         g_resume_selected = 1;
         g_art_selected = 0;
         return check_save_popup();
     }
     if (sym == SDLK_2 && g_recent_count > 1) {
         g_recent_popup_visible = 1;
+        g_recent_scroll = 0.0f;
         return 0;
     }
 

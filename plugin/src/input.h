@@ -26,6 +26,12 @@ void input_draw_controls(uint32_t *pixels, int pitch);
 /* Draw touch control overlays using OpenGL */
 void input_draw_controls_gl(void);
 
+/* Draw touch control overlays using software renderer (Pre3) */
+void input_draw_controls_sw(void);
+
+/* Draw popup overlays using software renderer (Pre3) */
+void input_draw_popup_sw(void);
+
 /* Check if reset button is pressed */
 int input_reset_pressed(void);
 

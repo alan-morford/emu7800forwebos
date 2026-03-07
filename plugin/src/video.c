@@ -17,10 +17,8 @@
 #include "tia.h"
 #include "maria.h"
 #include "input.h"
-
-/* Screen dimensions */
-#define SCREEN_WIDTH  1024
-#define SCREEN_HEIGHT 768
+#include "device.h"
+#include "sw_render.h"
 
 /* Frame buffer dimensions */
 #define FB_WIDTH_2600  160
@@ -133,22 +131,28 @@ int video_init(SDL_Surface *screen)
 {
     g_screen = screen;
 
+    /* Pre3 defaults to max-height (2X equivalent) */
+    if (device_is_small())
+        g_zoom_level = ZOOM_2X;
+
     /* Set up display quad for default zoom level */
     video_update_vertices();
 
-    /* Build pre-computed RGB565 palette LUTs */
+    /* Build pre-computed RGB565 palette LUTs (needed for both GL and SW) */
     build_palette_565(tia_ntsc_palette, g_tia_palette_565, 256);
     build_palette_565(maria_get_palette(g_maria_palette_index), g_maria_palette_565, 256);
 
-    /* Default GL_UNPACK_ALIGNMENT of 4 is fine: all texture row strides
-     * (256*2=512, 512*2=1024) are multiples of 4. */
+    if (device_has_gl()) {
+        /* Default GL_UNPACK_ALIGNMENT of 4 is fine: all texture row strides
+         * (256*2=512, 512*2=1024) are multiples of 4. */
 
-    /* Create ping-pong texture pairs for each mode */
-    g_textures_2600[0] = create_texture(TEX_WIDTH_2600, TEX_HEIGHT_2600, g_tex_buf_2600);
-    g_textures_2600[1] = create_texture(TEX_WIDTH_2600, TEX_HEIGHT_2600, g_tex_buf_2600);
-    g_textures_7800[0] = create_texture(TEX_WIDTH_7800, TEX_HEIGHT_7800, g_tex_buf_7800);
-    g_textures_7800[1] = create_texture(TEX_WIDTH_7800, TEX_HEIGHT_7800, g_tex_buf_7800);
-    g_tex_idx = 0;
+        /* Create ping-pong texture pairs for each mode */
+        g_textures_2600[0] = create_texture(TEX_WIDTH_2600, TEX_HEIGHT_2600, g_tex_buf_2600);
+        g_textures_2600[1] = create_texture(TEX_WIDTH_2600, TEX_HEIGHT_2600, g_tex_buf_2600);
+        g_textures_7800[0] = create_texture(TEX_WIDTH_7800, TEX_HEIGHT_7800, g_tex_buf_7800);
+        g_textures_7800[1] = create_texture(TEX_WIDTH_7800, TEX_HEIGHT_7800, g_tex_buf_7800);
+        g_tex_idx = 0;
+    }
 
     return 0;
 }
@@ -156,10 +160,12 @@ int video_init(SDL_Surface *screen)
 /* Shutdown video */
 void video_shutdown(void)
 {
-    glDeleteTextures(2, g_textures_2600);
-    g_textures_2600[0] = g_textures_2600[1] = 0;
-    glDeleteTextures(2, g_textures_7800);
-    g_textures_7800[0] = g_textures_7800[1] = 0;
+    if (device_has_gl()) {
+        glDeleteTextures(2, g_textures_2600);
+        g_textures_2600[0] = g_textures_2600[1] = 0;
+        glDeleteTextures(2, g_textures_7800);
+        g_textures_7800[0] = g_textures_7800[1] = 0;
+    }
     g_screen = NULL;
 }
 
@@ -170,14 +176,27 @@ static GLfloat g_vertices[8];
 static void video_update_vertices(void)
 {
     int w, h, x, y;
-    switch (g_zoom_level) {
-        case ZOOM_1X:   w = 320;  h = 240; break;
-        case ZOOM_2X:   w = 640;  h = 480; break;
-        case ZOOM_FULL: w = 1024; h = 768; break;
-        default:        w = 960;  h = 720; break; /* ZOOM_3X */
+    int sw = device_screen_width();
+    int sh = device_screen_height();
+
+    if (device_is_small()) {
+        /* Pre3 (800x480): 3X same as 2X, FULL stretches to fill */
+        switch (g_zoom_level) {
+            case ZOOM_1X:   w = 320; h = 240; break;
+            case ZOOM_FULL: w = sw;  h = sh;  break;
+            default:        w = 640; h = 480; break; /* ZOOM_2X and ZOOM_3X */
+        }
+    } else {
+        /* TouchPad (1024x768) */
+        switch (g_zoom_level) {
+            case ZOOM_1X:   w = 320;  h = 240; break;
+            case ZOOM_2X:   w = 640;  h = 480; break;
+            case ZOOM_FULL: w = 1024; h = 768; break;
+            default:        w = 960;  h = 720; break; /* ZOOM_3X */
+        }
     }
-    x = (SCREEN_WIDTH - w) / 2;
-    y = (SCREEN_HEIGHT - h) / 2;
+    x = (sw - w) / 2;
+    y = (sh - h) / 2;
     g_vertices[0] = (GLfloat)x;       g_vertices[1] = (GLfloat)y;
     g_vertices[2] = (GLfloat)(x + w); g_vertices[3] = (GLfloat)y;
     g_vertices[4] = (GLfloat)x;       g_vertices[5] = (GLfloat)(y + h);
@@ -512,17 +531,126 @@ const char *video_get_scanline_brightness_label(void)
 /* Cycle to next zoom level */
 void video_cycle_zoom(void)
 {
-    g_zoom_level = (g_zoom_level + 1) % ZOOM_COUNT;
+    if (device_is_small()) {
+        /* Pre3: toggle between max-height and fullscreen */
+        g_zoom_level = (g_zoom_level == ZOOM_FULL) ? ZOOM_2X : ZOOM_FULL;
+    } else {
+        g_zoom_level = (g_zoom_level + 1) % ZOOM_COUNT;
+    }
     video_update_vertices();
 }
 
 /* Get label for current zoom level */
 const char *video_get_zoom_label(void)
 {
+    if (device_is_small()) {
+        return (g_zoom_level == ZOOM_FULL) ? "FULLSCREEN" : "ORIGINAL";
+    }
     switch (g_zoom_level) {
         case ZOOM_1X:   return "ORIGINAL";
         case ZOOM_2X:   return "2X";
         case ZOOM_FULL: return "FULLSCREEN";
         default:        return "3X";
     }
+}
+
+/* ---- Software rendering path (Pre3) ---- */
+
+/* SW display rect (logical landscape coords) */
+static int g_sw_disp_x = 0, g_sw_disp_y = 0;
+static int g_sw_disp_w = 640, g_sw_disp_h = 480;
+
+/* Recompute SW display rect from current zoom/mode */
+static void video_update_sw_rect(void)
+{
+    int scr_w = device_screen_width();
+    int scr_h = device_screen_height();
+    int w, h;
+
+    if (g_zoom_level == ZOOM_FULL) {
+        w = scr_w; h = scr_h;
+    } else {
+        /* Max height: scale to fill vertical, maintain aspect ratio */
+        if (machine_get_type() == MACHINE_7800) {
+            w = 640; h = 480;
+        } else {
+            int active = tia_get_active_height();
+            if (active < 1) active = 192;
+            w = 480; h = active * 3;
+        }
+    }
+
+    /* Clamp to screen */
+    if (w > scr_w) w = scr_w;
+    if (h > scr_h) h = scr_h;
+
+    g_sw_disp_x = (scr_w - w) / 2;
+    g_sw_disp_y = (scr_h - h) / 2;
+    g_sw_disp_w = w;
+    g_sw_disp_h = h;
+}
+
+int video_sw_is_fullscreen(void)
+{
+    return g_zoom_level == ZOOM_FULL;
+}
+
+/* Render the emulator frame via software blitting */
+void video_render_frame_sw(void)
+{
+    uint8_t *fb;
+
+    if (!g_screen) return;
+
+    video_update_sw_rect();
+
+    fb = machine_get_frame_buffer();
+    if (!fb) return;
+
+    if (machine_get_type() == MACHINE_7800) {
+        /* Copy display buffer for thread safety */
+        memcpy(g_fb_copy_7800, fb, FB_WIDTH_7800 * FB_HEIGHT);
+
+        sw_blit_indexed(g_fb_copy_7800 + START_LINE_7800 * FB_WIDTH_7800,
+                        FB_WIDTH_7800, VISIBLE_7800, FB_WIDTH_7800,
+                        g_maria_palette_565,
+                        g_sw_disp_x, g_sw_disp_y,
+                        g_sw_disp_w, g_sw_disp_h);
+    } else {
+        int active_height, vbo_sl, display_offset, display_height;
+
+        memcpy(g_fb_copy_2600, fb, FB_WIDTH_2600 * FB_HEIGHT);
+
+        active_height = tia_get_active_height();
+        if (active_height < 1) active_height = 192;
+        if (active_height > FB_HEIGHT) active_height = FB_HEIGHT;
+
+        vbo_sl = tia_get_vblank_off_scanline();
+        display_offset = 0;
+        if (vbo_sl >= 0 && vbo_sl < CRT_DISPLAY_START_SL) {
+            display_offset = CRT_DISPLAY_START_SL - vbo_sl;
+            if (display_offset >= active_height)
+                display_offset = 0;
+        }
+
+        display_height = active_height - display_offset;
+        if (display_offset > 0 && display_height > CRT_MAX_DISPLAY_H)
+            display_height = CRT_MAX_DISPLAY_H;
+        if (display_height < 1) display_height = 192;
+        if (display_height > FB_HEIGHT) display_height = FB_HEIGHT;
+
+        sw_blit_indexed(g_fb_copy_2600 + display_offset * FB_WIDTH_2600,
+                        FB_VISIBLE_W, display_height, FB_WIDTH_2600,
+                        g_tia_palette_565,
+                        g_sw_disp_x, g_sw_disp_y,
+                        g_sw_disp_w, g_sw_disp_h);
+    }
+
+    /* Scanline overlay */
+    if (g_scanlines_enabled) {
+        static const uint8_t alpha_lut[3] = { 94, 140, 191 };
+        sw_draw_scanlines(g_sw_disp_x, g_sw_disp_y, g_sw_disp_w, g_sw_disp_h,
+                          alpha_lut[g_scanline_brightness]);
+    }
+
 }

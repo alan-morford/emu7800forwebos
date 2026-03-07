@@ -61,4 +61,7 @@ int filepicker_key_down(int sym);
 /* Returns 1 if a keyboard was detected (persisted across sessions) */
 int filepicker_keyboard_detected(void);
 
+/* Show the "File not found" popup (called from main when launch path is missing) */
+void filepicker_show_notfound(void);
+
 #endif /* FILEPICKER_H */

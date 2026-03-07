@@ -21,82 +21,43 @@
 #include "font.h"
 #include "video.h"
 #include "filepicker.h"
+#include "device.h"
+#include "sw_render.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
 
-/* Screen dimensions */
-#define SCREEN_WIDTH  1024
-#define SCREEN_HEIGHT 768
+/* Layout variables — initialized once by input_init_layout() */
+static int DPAD_X, DPAD_Y, DPAD_WIDTH, DPAD_HEIGHT;
+static int DPAD_CENTER_X, DPAD_CENTER_Y, DPAD_DEADZONE;
+static int FIRE_SIZE, FIRE_X, FIRE_Y;
+static int FIRE2_SIZE, FIRE2_X, FIRE2_Y;
+static int BTN_Y, BTN_HEIGHT, BTN_GAP;
+static int BACK_X, BACK_WIDTH;
+static int PAUSE_X, PAUSE_WIDTH;
+static int RESET_WIDTH, RESET_X;
+static int SELECT_WIDTH, SELECT_X;
+static int BTN_BOT_WIDTH, BTN_BOT_HEIGHT, BTN_BOT_Y, BTN_BOT_GAP;
+static int LOAD_X, LOAD_Y, LOAD_WIDTH, LOAD_HEIGHT;
+static int ZOOM_X, ZOOM_Y, ZOOM_WIDTH, ZOOM_HEIGHT;
+static int SAVE_X, SAVE_Y, SAVE_WIDTH, SAVE_HEIGHT;
+static int OPTIONS_X, OPTIONS_Y, OPTIONS_WIDTH, OPTIONS_HEIGHT;
 
-/* Touch control regions */
+/* Popup layout variables — initialized by input_init_layout() */
+#define IGPOPUP_ROWS    7
+static int IGPOPUP_W, IGPOPUP_PAD, IGPOPUP_TITLE_H, IGPOPUP_ROW_H;
+static int IGPOPUP_H, IGPOPUP_X, IGPOPUP_Y;
+static int IGPOPUP_BTN_W, IGPOPUP_BTN_H;
 
-/* D-pad region (bottom-left) */
-#define DPAD_X       0
-#define DPAD_Y       568
-#define DPAD_WIDTH   200
-#define DPAD_HEIGHT  200
-#define DPAD_CENTER_X (DPAD_X + DPAD_WIDTH / 2)
-#define DPAD_CENTER_Y (DPAD_Y + DPAD_HEIGHT / 2)
-#define DPAD_DEADZONE 30
+static int CONFIRM_W, CONFIRM_H, CONFIRM_X, CONFIRM_Y;
+static int CONFIRM_BTN_W, CONFIRM_BTN_H;
 
-/* Fire button (bottom-right) */
-#define FIRE_SIZE    96
-#define FIRE_X       (1024 - 30 - FIRE_SIZE)
-#define FIRE_Y       642
-
-/* Fire2 button (left of fire, for 7800) */
-#define FIRE2_SIZE   96
-#define FIRE2_X      (FIRE_X - 20 - FIRE2_SIZE)
-#define FIRE2_Y      642
-
-/* Top button bar: BACK, PAUSE on left; SELECT, RESET on right */
-#define BTN_Y        10
-#define BTN_HEIGHT   40
-#define BTN_GAP      10
-
-/* Left group */
-#define BACK_X       10
-#define BACK_WIDTH   96
-
-#define PAUSE_X      (BACK_X + BACK_WIDTH + BTN_GAP)
-#define PAUSE_WIDTH  96
-
-/* Right group */
-#define RESET_WIDTH  112
-#define RESET_X      (SCREEN_WIDTH - 10 - RESET_WIDTH)
-
-#define SELECT_WIDTH 112
-#define SELECT_X     (RESET_X - BTN_GAP - SELECT_WIDTH)
+static int ASWARN_W, ASWARN_H, ASWARN_X, ASWARN_Y;
 
 /* ---- Per-finger multitouch tracking ---- */
 
 #define MAX_TOUCHES 5
-
-/* Bottom button bar: SAVE, LOAD, ZOOM, OPTIONS
- * LOAD and ZOOM split screen center (512). All buttons same width. */
-#define BTN_BOT_WIDTH   128
-#define BTN_BOT_HEIGHT  40
-#define BTN_BOT_Y       720
-#define BTN_BOT_GAP     10
-/* LOAD right edge at center - gap/2, ZOOM left edge at center + gap/2 */
-#define LOAD_X       (SCREEN_WIDTH / 2 - BTN_BOT_GAP / 2 - BTN_BOT_WIDTH)
-#define LOAD_Y       BTN_BOT_Y
-#define LOAD_WIDTH   BTN_BOT_WIDTH
-#define LOAD_HEIGHT  BTN_BOT_HEIGHT
-#define ZOOM_X       (SCREEN_WIDTH / 2 + BTN_BOT_GAP / 2)
-#define ZOOM_Y       BTN_BOT_Y
-#define ZOOM_WIDTH   BTN_BOT_WIDTH
-#define ZOOM_HEIGHT  BTN_BOT_HEIGHT
-#define SAVE_X       (LOAD_X - BTN_BOT_GAP - BTN_BOT_WIDTH)
-#define SAVE_Y       BTN_BOT_Y
-#define SAVE_WIDTH   BTN_BOT_WIDTH
-#define SAVE_HEIGHT  BTN_BOT_HEIGHT
-#define OPTIONS_X    (ZOOM_X + ZOOM_WIDTH + BTN_BOT_GAP)
-#define OPTIONS_Y    BTN_BOT_Y
-#define OPTIONS_WIDTH  BTN_BOT_WIDTH
-#define OPTIONS_HEIGHT BTN_BOT_HEIGHT
 
 typedef enum {
     TOUCH_NONE = 0,
@@ -291,10 +252,124 @@ static void release_target(TouchTarget target)
     }
 }
 
+/* Initialize layout variables based on device type */
+static void input_init_layout(void)
+{
+    int sw = device_screen_width();
+    int sh = device_screen_height();
+
+    if (device_is_small()) {
+        /* HP Pre3 (800x480 landscape) */
+        DPAD_X = 10;      DPAD_Y = sh - 192 - 10;  /* 278; 10px buffer bottom */
+        DPAD_WIDTH = 192;  DPAD_HEIGHT = 192;
+        DPAD_DEADZONE = 24;
+
+        FIRE_SIZE = 108;
+        FIRE_X = sw - 10 - FIRE_SIZE;   /* 682; 10px buffer right */
+        FIRE_Y = sh - FIRE_SIZE - 10;   /* 362; 10px buffer bottom */
+        FIRE2_SIZE = 108;
+        FIRE2_X = FIRE_X;               /* same X as fire */
+        FIRE2_Y = FIRE_Y - 12 - FIRE2_SIZE;  /* 242; stacked above fire */
+
+        BTN_Y = 6;  BTN_HEIGHT = 30;  BTN_GAP = 6;
+        BACK_X = 6;  BACK_WIDTH = 80;
+        PAUSE_X = BACK_X + BACK_WIDTH + BTN_GAP;  PAUSE_WIDTH = 88;
+        RESET_WIDTH = 96;   RESET_X = sw - 6 - RESET_WIDTH;
+        SELECT_WIDTH = 104;  SELECT_X = RESET_X - BTN_GAP - SELECT_WIDTH;
+
+        BTN_BOT_WIDTH = 120;  BTN_BOT_HEIGHT = 30;
+        BTN_BOT_Y = sh - BTN_BOT_HEIGHT - 4;  BTN_BOT_GAP = 6;
+
+        /* Popups (600px wide = 100px tap margin each side) */
+        IGPOPUP_W = 600;  IGPOPUP_PAD = 16;
+        IGPOPUP_TITLE_H = 28;  IGPOPUP_ROW_H = 42;
+        IGPOPUP_BTN_W = 112;  IGPOPUP_BTN_H = 40;
+
+        CONFIRM_W = 500;  CONFIRM_H = 130;
+        CONFIRM_BTN_W = 80;  CONFIRM_BTN_H = 40;
+
+        ASWARN_W = 600;  ASWARN_H = 210;
+    } else {
+        /* HP TouchPad (1024x768) */
+        DPAD_X = 0;       DPAD_Y = 568;
+        DPAD_WIDTH = 200;  DPAD_HEIGHT = 200;
+        DPAD_DEADZONE = 30;
+
+        FIRE_SIZE = 96;
+        FIRE_X = sw - 30 - FIRE_SIZE;   /* 898 */
+        FIRE_Y = 642;
+        FIRE2_SIZE = 96;
+        FIRE2_X = FIRE_X - 20 - FIRE2_SIZE;  /* 782 */
+        FIRE2_Y = 642;
+
+        BTN_Y = 10;  BTN_HEIGHT = 40;  BTN_GAP = 10;
+        BACK_X = 10;  BACK_WIDTH = 96;
+        PAUSE_X = BACK_X + BACK_WIDTH + BTN_GAP;  PAUSE_WIDTH = 96;
+        RESET_WIDTH = 112;   RESET_X = sw - 10 - RESET_WIDTH;
+        SELECT_WIDTH = 112;  SELECT_X = RESET_X - BTN_GAP - SELECT_WIDTH;
+
+        BTN_BOT_WIDTH = 128;  BTN_BOT_HEIGHT = 40;
+        BTN_BOT_Y = 720;  BTN_BOT_GAP = 10;
+
+        /* Popups */
+        IGPOPUP_W = 460;  IGPOPUP_PAD = 16;
+        IGPOPUP_TITLE_H = 28;  IGPOPUP_ROW_H = 44;
+        IGPOPUP_BTN_W = 112;  IGPOPUP_BTN_H = 40;
+
+        CONFIRM_W = 420;  CONFIRM_H = 120;
+        CONFIRM_BTN_W = 80;  CONFIRM_BTN_H = 36;
+
+        ASWARN_W = 640;  ASWARN_H = 210;
+    }
+
+    /* Derived values (same formula for both devices) */
+    DPAD_CENTER_X = DPAD_X + DPAD_WIDTH / 2;
+    DPAD_CENTER_Y = DPAD_Y + DPAD_HEIGHT / 2;
+
+    if (device_is_small()) {
+        /* Pre3: smaller Save/Load/Zoom, larger Options */
+        int sml = 80;   /* Save, Load, Zoom width */
+        int opt = BTN_BOT_WIDTH;  /* Options width (120) */
+        int total = sml * 3 + opt + BTN_BOT_GAP * 3;
+        int x0 = (sw - total) / 2;
+        SAVE_X = x0;
+        SAVE_Y = BTN_BOT_Y;  SAVE_WIDTH = sml;  SAVE_HEIGHT = BTN_BOT_HEIGHT;
+        LOAD_X = SAVE_X + sml + BTN_BOT_GAP;
+        LOAD_Y = BTN_BOT_Y;  LOAD_WIDTH = sml;  LOAD_HEIGHT = BTN_BOT_HEIGHT;
+        ZOOM_X = LOAD_X + sml + BTN_BOT_GAP;
+        ZOOM_Y = BTN_BOT_Y;  ZOOM_WIDTH = sml;  ZOOM_HEIGHT = BTN_BOT_HEIGHT;
+        OPTIONS_X = ZOOM_X + sml + BTN_BOT_GAP;
+        OPTIONS_Y = BTN_BOT_Y;  OPTIONS_WIDTH = opt;  OPTIONS_HEIGHT = BTN_BOT_HEIGHT;
+    } else {
+        LOAD_X = sw / 2 - BTN_BOT_GAP / 2 - BTN_BOT_WIDTH;
+        LOAD_Y = BTN_BOT_Y;  LOAD_WIDTH = BTN_BOT_WIDTH;  LOAD_HEIGHT = BTN_BOT_HEIGHT;
+        ZOOM_X = sw / 2 + BTN_BOT_GAP / 2;
+        ZOOM_Y = BTN_BOT_Y;  ZOOM_WIDTH = BTN_BOT_WIDTH;  ZOOM_HEIGHT = BTN_BOT_HEIGHT;
+        SAVE_X = LOAD_X - BTN_BOT_GAP - BTN_BOT_WIDTH;
+        SAVE_Y = BTN_BOT_Y;  SAVE_WIDTH = BTN_BOT_WIDTH;  SAVE_HEIGHT = BTN_BOT_HEIGHT;
+        OPTIONS_X = ZOOM_X + ZOOM_WIDTH + BTN_BOT_GAP;
+        OPTIONS_Y = BTN_BOT_Y;  OPTIONS_WIDTH = BTN_BOT_WIDTH;  OPTIONS_HEIGHT = BTN_BOT_HEIGHT;
+    }
+
+    IGPOPUP_H = IGPOPUP_PAD + IGPOPUP_TITLE_H + IGPOPUP_PAD
+              + IGPOPUP_ROWS * IGPOPUP_ROW_H + IGPOPUP_PAD;
+    IGPOPUP_X = (sw - IGPOPUP_W) / 2;
+    IGPOPUP_Y = (sh - IGPOPUP_H) / 2;
+
+    CONFIRM_X = (sw - CONFIRM_W) / 2;
+    CONFIRM_Y = (sh - CONFIRM_H) / 2;
+
+    ASWARN_X = (sw - ASWARN_W) / 2;
+    ASWARN_Y = (sh - ASWARN_H) / 2;
+}
+
 /* Initialize input */
 void input_init(void)
 {
     int i;
+
+    input_init_layout();
+
     for (i = 0; i < MAX_TOUCHES; i++) {
         g_touches[i].active = 0;
         g_touches[i].finger_id = -1;
@@ -616,7 +691,7 @@ void input_draw_controls_gl(void)
     if (g_notify_timer > 0) {
         float alpha = (g_notify_timer > 30) ? 0.9f : (g_notify_timer / 30.0f) * 0.9f;
         int text_w = font_string_width(g_notify_text, 3);
-        int text_x = (SCREEN_WIDTH - text_w) / 2;
+        int text_x = (device_screen_width() - text_w) / 2;
         font_draw_string(g_notify_text, text_x, BTN_Y + 12, 3,
                          1.0f, 1.0f, 1.0f, alpha);
     }
@@ -675,6 +750,283 @@ void input_draw_controls(uint32_t *pixels, int pitch)
 {
     (void)pixels;
     (void)pitch;
+}
+
+/* Helper: convert float color to uint8_t */
+static uint8_t f2b(float f) { return (uint8_t)(f * 255.0f + 0.5f); }
+
+/* Draw touch control overlays using software renderer (Pre3) */
+void input_draw_controls_sw(void)
+{
+    int fire_pressed = is_target_active(TOUCH_FIRE);
+    int fire2_pressed = is_target_active(TOUCH_FIRE2);
+    float dim = get_dim_multiplier();
+    uint8_t da = f2b(0.25f * dim);  /* dpad bg alpha */
+
+    /* D-pad finger tracker (orange circle follows touch) */
+    if (g_dpad_active) {
+        sw_fill_circle_a(g_dpad_touch_x, g_dpad_touch_y, DPAD_DEADZONE,
+                         255, 128, 38, f2b(0.5f * dim));
+    }
+
+    /* D-pad background (semi-transparent white circle) */
+    sw_fill_circle_a(DPAD_CENTER_X, DPAD_CENTER_Y, DPAD_WIDTH / 2, 255, 255, 255, da);
+
+    /* Cross lines in D-pad (orange) */
+    {
+        int cr = DPAD_WIDTH * 3 / 8;  /* cross half-length (72 for 192px dpad) */
+        int cw = DPAD_WIDTH / 32 + 1; /* cross half-width (7 for 192px dpad) */
+        sw_fill_rect_a(DPAD_CENTER_X - cw, DPAD_CENTER_Y - cr, cw * 2, cr * 2, 255, 128, 38, da);
+        sw_fill_rect_a(DPAD_CENTER_X - cr, DPAD_CENTER_Y - cw, cr * 2, cw * 2, 255, 128, 38, da);
+    }
+
+    /* Fire button (orange) */
+    {
+        uint8_t fa = f2b((fire_pressed ? 0.5f : 0.4f) * dim);
+        sw_fill_circle_a(FIRE_X + FIRE_SIZE/2, FIRE_Y + FIRE_SIZE/2,
+                         FIRE_SIZE/2, 255, 128, 38, fa);
+    }
+
+    /* Fire2 button (7800 only) */
+    if (machine_get_type() == MACHINE_7800) {
+        uint8_t fa = f2b((fire2_pressed ? 0.5f : 0.4f) * dim);
+        sw_fill_circle_a(FIRE2_X + FIRE2_SIZE/2, FIRE2_Y + FIRE2_SIZE/2,
+                         FIRE2_SIZE/2, 255, 128, 38, fa);
+    }
+
+    /* Top button bar */
+    {
+        uint8_t ba = f2b(0.4f * dim);
+        uint8_t ta = f2b(0.5f * dim);
+        int bw, pw, selw, rw;
+
+        /* BACK */
+        sw_fill_rect_a(BACK_X, BTN_Y, BACK_WIDTH, BTN_HEIGHT, 255, 128, 38, ba);
+        bw = sw_string_width("BACK", 2);
+        sw_draw_string_a(BACK_X + (BACK_WIDTH - bw) / 2, BTN_Y + 8, "BACK", 2, 255, 255, 255, ta);
+
+        /* PAUSE */
+        sw_fill_rect_a(PAUSE_X, BTN_Y, PAUSE_WIDTH, BTN_HEIGHT, 77, 77, 77, ba);
+        pw = sw_string_width("PAUSE", 2);
+        sw_draw_string_a(PAUSE_X + (PAUSE_WIDTH - pw) / 2, BTN_Y + 8, "PAUSE", 2, 255, 128, 38, ta);
+
+        /* SELECT */
+        sw_fill_rect_a(SELECT_X, BTN_Y, SELECT_WIDTH, BTN_HEIGHT, 77, 77, 77, ba);
+        selw = sw_string_width("SELECT", 2);
+        sw_draw_string_a(SELECT_X + (SELECT_WIDTH - selw) / 2, BTN_Y + 8, "SELECT", 2, 255, 128, 38, ta);
+
+        /* RESET */
+        sw_fill_rect_a(RESET_X, BTN_Y, RESET_WIDTH, BTN_HEIGHT, 77, 77, 77, ba);
+        rw = sw_string_width("RESET", 2);
+        sw_draw_string_a(RESET_X + (RESET_WIDTH - rw) / 2, BTN_Y + 8, "RESET", 2, 255, 128, 38, ta);
+    }
+
+    /* Bottom buttons */
+    {
+        uint8_t ba = f2b(0.4f * dim);
+        uint8_t ta = f2b(0.5f * dim);
+        int svw, lw, zw, ow;
+
+        /* SAVE */
+        sw_fill_rect_a(SAVE_X, SAVE_Y, SAVE_WIDTH, SAVE_HEIGHT, 77, 77, 77, ba);
+        svw = sw_string_width("SAVE", 2);
+        sw_draw_string_a(SAVE_X + (SAVE_WIDTH - svw) / 2, SAVE_Y + 8, "SAVE", 2, 255, 128, 38, ta);
+
+        /* LOAD */
+        lw = sw_string_width("LOAD", 2);
+        if (g_save_exists) {
+            sw_fill_rect_a(LOAD_X, LOAD_Y, LOAD_WIDTH, LOAD_HEIGHT, 77, 77, 77, ba);
+            sw_draw_string_a(LOAD_X + (LOAD_WIDTH - lw) / 2, LOAD_Y + 8, "LOAD", 2, 255, 128, 38, ta);
+        } else {
+            sw_fill_rect_a(LOAD_X, LOAD_Y, LOAD_WIDTH, LOAD_HEIGHT, 51, 51, 51, f2b(0.15f * dim));
+            sw_draw_string_a(LOAD_X + (LOAD_WIDTH - lw) / 2, LOAD_Y + 8, "LOAD", 2, 128, 128, 128, f2b(0.3f * dim));
+        }
+
+        /* ZOOM */
+        sw_fill_rect_a(ZOOM_X, ZOOM_Y, ZOOM_WIDTH, ZOOM_HEIGHT, 77, 77, 77, ba);
+        zw = sw_string_width("ZOOM", 2);
+        sw_draw_string_a(ZOOM_X + (ZOOM_WIDTH - zw) / 2, ZOOM_Y + 8, "ZOOM", 2, 255, 128, 38, ta);
+
+        /* OPTIONS */
+        sw_fill_rect_a(OPTIONS_X, OPTIONS_Y, OPTIONS_WIDTH, OPTIONS_HEIGHT, 77, 77, 77, ba);
+        ow = sw_string_width("OPTIONS", 2);
+        sw_draw_string_a(OPTIONS_X + (OPTIONS_WIDTH - ow) / 2, OPTIONS_Y + 8, "OPTIONS", 2, 255, 128, 38, ta);
+    }
+
+    /* Notification text at top center */
+    if (g_notify_timer > 0) {
+        uint8_t alpha = (g_notify_timer > 30) ? 230 : (uint8_t)(g_notify_timer * 230 / 30);
+        int text_w = sw_string_width(g_notify_text, 3);
+        int text_x = (device_screen_width() - text_w) / 2;
+        sw_draw_string_a(text_x, BTN_Y + 8, g_notify_text, 3, 255, 255, 255, alpha);
+    }
+
+}
+
+/* Draw OPTIONS popup overlay using software renderer (Pre3) */
+void input_draw_popup_sw(void)
+{
+    int row;
+    int row_x, row_y, btn_x, btn_y;
+    const char *label;
+
+    if (!g_options_popup_visible && !g_confirm_visible && !g_autosave_warn_visible)
+        return;
+
+    if (g_options_popup_visible) {
+        /* Dark overlay (full screen black 60%) */
+        sw_fill_rect_a(0, 0, device_screen_width(), device_screen_height(), 0, 0, 0, 153);
+
+        /* Box with orange border */
+        sw_fill_rect(IGPOPUP_X - 1, IGPOPUP_Y - 1, IGPOPUP_W + 2, IGPOPUP_H + 2, 255, 128, 38);
+        sw_fill_rect(IGPOPUP_X, IGPOPUP_Y, IGPOPUP_W, IGPOPUP_H, 0, 0, 0);
+
+        /* Title: "Options" */
+        {
+            int tw = sw_string_width("Options", 3);
+            sw_draw_string(IGPOPUP_X + (IGPOPUP_W - tw) / 2,
+                           IGPOPUP_Y + IGPOPUP_PAD, "Options", 3, 255, 128, 38);
+        }
+
+        /* Rows */
+        for (row = 0; row < IGPOPUP_ROWS; row++) {
+            const char *row_label = NULL;
+            uint8_t lbl_r = 255, lbl_g = 128, lbl_b = 38;
+            uint8_t label_alpha = 230;
+
+            row_y = IGPOPUP_Y + IGPOPUP_PAD + IGPOPUP_TITLE_H + IGPOPUP_PAD + row * IGPOPUP_ROW_H;
+            row_x = IGPOPUP_X + IGPOPUP_PAD;
+            btn_x = IGPOPUP_X + IGPOPUP_W - IGPOPUP_PAD - IGPOPUP_BTN_W;
+            btn_y = row_y + (IGPOPUP_ROW_H - IGPOPUP_BTN_H) / 2;
+
+            label = NULL;
+
+            switch (row) {
+                case 0: row_label = "Auto-Save on Close"; label = g_autosave ? "ON" : "OFF"; break;
+                case 1: row_label = "Ask Before Saving"; label = g_autosave_ask ? "ON" : "OFF";
+                    if (!g_autosave) { lbl_r = 102; lbl_g = 102; lbl_b = 102; label_alpha = 128; }
+                    break;
+                case 2: row_label = "Control Brightness";
+                    switch (g_control_dim) { case 1: label = "DIM"; break; case 2: label = "DIMMER"; break; default: label = "BRIGHT"; break; }
+                    break;
+                case 3: row_label = "Scanlines"; label = video_get_scanlines() ? "ON" : "OFF"; break;
+                case 4: row_label = "Scanline Brightness"; label = video_get_scanline_brightness_label(); break;
+                case 5: row_label = "Palette (7800)"; label = video_get_palette_label(); break;
+                case 6: row_label = "Bug Report"; label = "EMAIL"; break;
+            }
+
+            /* Row label */
+            if (row_label) {
+                uint8_t la = (row == 1 && !g_autosave) ? 102 : 230;
+                sw_draw_string_a(row_x, row_y + (IGPOPUP_ROW_H - 16) / 2, row_label, 2, 230, 230, 230, la);
+            }
+
+            /* Button background */
+            if (row == 1 && !g_autosave) {
+                sw_fill_rect_a(btn_x, btn_y, IGPOPUP_BTN_W, IGPOPUP_BTN_H, 51, 51, 51, 77);
+            } else {
+                sw_fill_rect_a(btn_x, btn_y, IGPOPUP_BTN_W, IGPOPUP_BTN_H, 77, 77, 77, 153);
+            }
+
+            /* Button label */
+            if (label) {
+                int lw = sw_string_width(label, 2);
+                sw_draw_string_a(btn_x + (IGPOPUP_BTN_W - lw) / 2,
+                                 btn_y + (IGPOPUP_BTN_H - 16) / 2, label, 2,
+                                 lbl_r, lbl_g, lbl_b, label_alpha);
+            }
+        }
+    }
+
+    /* Confirm dialog */
+    if (g_confirm_visible) {
+        int yes_x, no_x, btn_cy;
+        const char *q = "Save before closing?";
+        int qw;
+
+        if (!g_options_popup_visible) {
+            sw_fill_rect_a(0, 0, device_screen_width(), device_screen_height(), 0, 0, 0, 153);
+        }
+
+        sw_fill_rect(CONFIRM_X - 1, CONFIRM_Y - 1, CONFIRM_W + 2, CONFIRM_H + 2, 255, 128, 38);
+        sw_fill_rect(CONFIRM_X, CONFIRM_Y, CONFIRM_W, CONFIRM_H, 0, 0, 0);
+
+        qw = sw_string_width(q, 2);
+        sw_draw_string(CONFIRM_X + (CONFIRM_W - qw) / 2, CONFIRM_Y + 16, q, 2, 255, 128, 38);
+
+        btn_cy = CONFIRM_Y + CONFIRM_H - CONFIRM_BTN_H - 16;
+        yes_x = CONFIRM_X + CONFIRM_W / 2 - CONFIRM_BTN_W - 20;
+        no_x  = CONFIRM_X + CONFIRM_W / 2 + 20;
+
+        sw_fill_rect_a(yes_x, btn_cy, CONFIRM_BTN_W, CONFIRM_BTN_H, 77, 77, 77, 153);
+        {
+            int yw = sw_string_width("Yes", 2);
+            sw_draw_string(yes_x + (CONFIRM_BTN_W - yw) / 2,
+                           btn_cy + (CONFIRM_BTN_H - 16) / 2, "Yes", 2, 255, 128, 38);
+        }
+
+        sw_fill_rect_a(no_x, btn_cy, CONFIRM_BTN_W, CONFIRM_BTN_H, 77, 77, 77, 153);
+        {
+            int nw = sw_string_width("No", 2);
+            sw_draw_string(no_x + (CONFIRM_BTN_W - nw) / 2,
+                           btn_cy + (CONFIRM_BTN_H - 16) / 2, "No", 2, 255, 128, 38);
+        }
+    }
+
+    /* Auto-save warning dialog */
+    if (g_autosave_warn_visible) {
+        int yes_x, no_x, btn_cy;
+        int tw;
+        static const char *warn_lines[] = {
+            "If you already have a save file,",
+            "this will overwrite it",
+            "automatically when exiting a game",
+            "to return to the ROM select",
+            "screen. Are you sure you want to",
+            NULL
+        };
+        const char *last_line;
+        int i, text_y;
+
+        if (g_autosave_warn_action == 0)
+            last_line = "enable auto-save?";
+        else
+            last_line = "disable Ask Before Saving?";
+
+        if (!g_options_popup_visible && !g_confirm_visible) {
+            sw_fill_rect_a(0, 0, device_screen_width(), device_screen_height(), 0, 0, 0, 153);
+        }
+
+        sw_fill_rect(ASWARN_X - 1, ASWARN_Y - 1, ASWARN_W + 2, ASWARN_H + 2, 255, 128, 38);
+        sw_fill_rect(ASWARN_X, ASWARN_Y, ASWARN_W, ASWARN_H, 0, 0, 0);
+
+        text_y = ASWARN_Y + 16;
+        for (i = 0; warn_lines[i] != NULL; i++) {
+            tw = sw_string_width(warn_lines[i], 2);
+            sw_draw_string(ASWARN_X + (ASWARN_W - tw) / 2, text_y, warn_lines[i], 2, 255, 128, 38);
+            text_y += 18;
+        }
+        tw = sw_string_width(last_line, 2);
+        sw_draw_string(ASWARN_X + (ASWARN_W - tw) / 2, text_y, last_line, 2, 255, 128, 38);
+
+        btn_cy = ASWARN_Y + ASWARN_H - CONFIRM_BTN_H - 16;
+        yes_x = ASWARN_X + ASWARN_W / 2 - CONFIRM_BTN_W - 20;
+        no_x  = ASWARN_X + ASWARN_W / 2 + 20;
+
+        sw_fill_rect_a(yes_x, btn_cy, CONFIRM_BTN_W, CONFIRM_BTN_H, 255, 128, 38, 204);
+        {
+            int yw = sw_string_width("Yes", 2);
+            sw_draw_string(yes_x + (CONFIRM_BTN_W - yw) / 2,
+                           btn_cy + (CONFIRM_BTN_H - 16) / 2, "Yes", 2, 255, 255, 255);
+        }
+
+        sw_fill_rect_a(no_x, btn_cy, CONFIRM_BTN_W, CONFIRM_BTN_H, 77, 77, 77, 204);
+        {
+            int nw = sw_string_width("No", 2);
+            sw_draw_string(no_x + (CONFIRM_BTN_W - nw) / 2,
+                           btn_cy + (CONFIRM_BTN_H - 16) / 2, "No", 2, 255, 128, 38);
+        }
+    }
 }
 
 /* Check if reset button is pressed */
@@ -786,6 +1138,17 @@ void input_handle_key_down(int sdl_key)
             if (machine_get_type() == MACHINE_7800 && !g_key_fire) {
                 g_key_fire = 1;
                 machine_set_trigger(0, 1);
+            }
+            break;
+        case 27:  /* ESC / back gesture */
+            if (g_options_popup_visible) {
+                g_options_popup_visible = 0;
+            } else if (g_confirm_visible) {
+                g_confirm_visible = 0;
+            } else if (g_autosave_warn_visible) {
+                g_autosave_warn_visible = 0;
+            } else {
+                g_back_pressed = 1;
             }
             break;
         case SDLK_1:
@@ -950,32 +1313,6 @@ void input_set_control_dim(int val) { g_control_dim = (val >= 0 && val <= 2) ? v
 int input_autosave_warn_visible(void) { return g_autosave_warn_visible; }
 int input_autosave_warn_result(void)  { return g_autosave_warn_result; }
 
-/* ---- Popup layout constants ---- */
-#define IGPOPUP_ROWS    7
-#define IGPOPUP_W       460
-#define IGPOPUP_PAD     16
-#define IGPOPUP_TITLE_H 28
-#define IGPOPUP_ROW_H   44
-#define IGPOPUP_H       (IGPOPUP_PAD + IGPOPUP_TITLE_H + IGPOPUP_PAD + IGPOPUP_ROWS * IGPOPUP_ROW_H + IGPOPUP_PAD)
-#define IGPOPUP_X       ((SCREEN_WIDTH - IGPOPUP_W) / 2)
-#define IGPOPUP_Y       ((SCREEN_HEIGHT - IGPOPUP_H) / 2)
-#define IGPOPUP_BTN_W   112
-#define IGPOPUP_BTN_H   40
-
-/* Confirm dialog layout */
-#define CONFIRM_W    420
-#define CONFIRM_H    120
-#define CONFIRM_X    ((SCREEN_WIDTH - CONFIRM_W) / 2)
-#define CONFIRM_Y    ((SCREEN_HEIGHT - CONFIRM_H) / 2)
-#define CONFIRM_BTN_W 80
-#define CONFIRM_BTN_H 36
-
-/* Auto-save warning dialog layout */
-#define ASWARN_W     640
-#define ASWARN_H     210
-#define ASWARN_X     ((SCREEN_WIDTH - ASWARN_W) / 2)
-#define ASWARN_Y     ((SCREEN_HEIGHT - ASWARN_H) / 2)
-
 /* Draw the OPTIONS popup overlay */
 void input_draw_popup_gl(void)
 {
@@ -993,7 +1330,7 @@ void input_draw_popup_gl(void)
 
     if (g_options_popup_visible) {
         /* Dark overlay (full screen black 60%) */
-        draw_rect_gl(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0.0f, 0.0f, 0.0f, 0.6f);
+        draw_rect_gl(0, 0, device_screen_width(), device_screen_height(), 0.0f, 0.0f, 0.0f, 0.6f);
 
         /* Black box with orange 1px border */
         draw_rect_gl(IGPOPUP_X - 1, IGPOPUP_Y - 1, IGPOPUP_W + 2, IGPOPUP_H + 2,
@@ -1091,7 +1428,7 @@ void input_draw_popup_gl(void)
 
         if (!g_options_popup_visible) {
             /* Dark overlay only if options popup isn't already drawing one */
-            draw_rect_gl(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0.0f, 0.0f, 0.0f, 0.6f);
+            draw_rect_gl(0, 0, device_screen_width(), device_screen_height(), 0.0f, 0.0f, 0.0f, 0.6f);
         }
 
         /* Box with orange border */
@@ -1151,7 +1488,7 @@ void input_draw_popup_gl(void)
             last_line = "disable Ask Before Saving?";
 
         if (!g_options_popup_visible && !g_confirm_visible) {
-            draw_rect_gl(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0.0f, 0.0f, 0.0f, 0.6f);
+            draw_rect_gl(0, 0, device_screen_width(), device_screen_height(), 0.0f, 0.0f, 0.0f, 0.6f);
         }
 
         /* Box with orange border */

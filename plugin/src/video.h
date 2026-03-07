@@ -46,4 +46,10 @@ void video_set_scanline_brightness(int idx);
 int  video_get_scanline_brightness(void);
 const char *video_get_scanline_brightness_label(void);
 
+/* Software rendering path (Pre3) */
+void video_render_frame_sw(void);
+
+/* Returns 1 if SW display covers full screen (no clear needed) */
+int video_sw_is_fullscreen(void);
+
 #endif /* VIDEO_H */

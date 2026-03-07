@@ -60,10 +60,22 @@ typedef int8_t   Sint8;
 typedef int16_t  Sint16;
 typedef int32_t  Sint32;
 
+/* Pixel format structure */
+typedef struct SDL_PixelFormat {
+    void *palette;
+    Uint8 BitsPerPixel;
+    Uint8 BytesPerPixel;
+    Uint8 Rloss, Gloss, Bloss, Aloss;
+    Uint8 Rshift, Gshift, Bshift, Ashift;
+    Uint32 Rmask, Gmask, Bmask, Amask;
+    Uint32 colorkey;
+    Uint8 alpha;
+} SDL_PixelFormat;
+
 /* Surface structure */
 typedef struct SDL_Surface {
     Uint32 flags;
-    void *format;
+    SDL_PixelFormat *format;
     int w, h;
     Uint16 pitch;
     void *pixels;
@@ -193,6 +205,8 @@ int SDL_Flip(SDL_Surface *screen);
 int SDL_LockSurface(SDL_Surface *surface);
 void SDL_UnlockSurface(SDL_Surface *surface);
 int SDL_ShowCursor(int toggle);
+int SDL_FillRect(SDL_Surface *dst, SDL_Rect *dstrect, Uint32 color);
+Uint32 SDL_MapRGB(SDL_PixelFormat *fmt, Uint8 r, Uint8 g, Uint8 b);
 
 /* OpenGL */
 int SDL_GL_SetAttribute(int attr, int value);

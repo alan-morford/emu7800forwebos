@@ -11,16 +11,13 @@
  * Copyright (c) 2024 EMU7800
  */
 
-#define _GNU_SOURCE  /* for RTLD_DEFAULT */
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 #include <pthread.h>
 #include <sys/time.h>
-#include <dlfcn.h>
 #include <SDL.h>
 #include <GLES/gl.h>
-#include "PDL.h"
 #include "machine.h"
 #include "tia.h"
 #include "video.h"
@@ -29,10 +26,8 @@
 #include "font.h"
 #include "filepicker.h"
 #include "savestate.h"
-
-/* Screen dimensions for HP TouchPad */
-#define SCREEN_WIDTH  1024
-#define SCREEN_HEIGHT 768
+#include "device.h"
+#include "sw_render.h"
 
 /* App states */
 #define APP_STATE_FILEPICKER 0
@@ -115,40 +110,28 @@ int main(int argc, char *argv[])
     (void)argc;
     (void)argv;
 
-    log_msg("EMU7800 starting... [build: emu7800-v1.4.0-20260219]");
+    log_msg("EMU7800 starting... [build: emu7800-v1.7.0-20260305]");
 
-    /* Initialize PDL */
-    log_msg("Calling PDL_Init...");
-    PDL_Init(0);
-
-    /* Enable aggressive multi-finger tracking (only available on real device) */
-    {
-        typedef PDL_Err (*SetTouchAggressionFunc)(int);
-        SetTouchAggressionFunc fn = (SetTouchAggressionFunc)dlsym(RTLD_DEFAULT, "PDL_SetTouchAggression");
-        if (fn) {
-            fn(1);
-            log_msg("PDL_SetTouchAggression(1) OK");
-        } else {
-            log_msg("PDL_SetTouchAggression not available");
-        }
-    }
-    log_msg("PDL_Init done");
+    /* Detect device and initialize PDL (all PDL calls via dlsym in device.c) */
+    device_init();
 
     /* Initialize SDL */
     log_msg("Calling init_sdl...");
     if (init_sdl() != 0) {
-        PDL_Quit();
+        device_pdl_quit();
         return 1;
     }
     log_msg("init_sdl done");
 
     /* Disable screen timeout */
-    PDL_ScreenTimeoutEnable(PDL_FALSE);
+    device_pdl_screen_timeout(0);
 
-    /* Initialize font system */
-    log_msg("font_init...");
-    font_init();
-    log_msg("font_init OK");
+    /* Initialize font system (requires GL) */
+    if (device_has_gl()) {
+        log_msg("font_init...");
+        font_init();
+        log_msg("font_init OK");
+    }
 
     /* Initialize machine */
     machine_init();
@@ -184,12 +167,14 @@ int main(int argc, char *argv[])
 
     /* Cleanup */
     filepicker_shutdown();
-    font_shutdown();
-    audio_shutdown();
+    if (device_has_gl()) {
+        font_shutdown();
+    }
     video_shutdown();
+    audio_shutdown();
     machine_shutdown();
     shutdown_sdl();
-    PDL_Quit();
+    device_pdl_quit();
 
     return 0;
 }
@@ -273,6 +258,8 @@ static void *emulator_thread(void *data)
 static int init_sdl(void)
 {
     char errmsg[256];
+    int sw = device_screen_width();
+    int sh = device_screen_height();
 
     /* Initialize SDL with video and audio */
     log_msg("SDL_Init VIDEO|AUDIO...");
@@ -282,69 +269,114 @@ static int init_sdl(void)
     }
     log_msg("SDL_Init OK");
 
-    /*
-     * webOS PDK OpenGL ES setup:
-     * - Set GL attributes BEFORE SDL_SetVideoMode
-     * - Use SDL_OPENGL flag
-     */
-    log_msg("Setting SDL GL attributes for GLES 1.1...");
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 1);
-    SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 5);
-    SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 6);
-    SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 5);
-    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 16);
-    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-    SDL_GL_SetAttribute(SDL_GL_SWAP_CONTROL, 1);  /* VSYNC enabled */
+    if (device_has_gl()) {
+        /*
+         * TouchPad path: OpenGL ES via SDL
+         * - Set GL attributes BEFORE SDL_SetVideoMode
+         * - Use SDL_OPENGL flag
+         */
+        char vmode_msg[128];
 
-    /* Create OpenGL surface */
-    log_msg("SDL_SetVideoMode 1024x768 OPENGL|FULLSCREEN...");
-    g_screen = SDL_SetVideoMode(SCREEN_WIDTH, SCREEN_HEIGHT, 0,
-                                SDL_OPENGL | SDL_FULLSCREEN);
-    if (g_screen == NULL) {
-        snprintf(errmsg, sizeof(errmsg), "SDL_SetVideoMode FAILED: %s", SDL_GetError());
-        log_msg(errmsg);
-        SDL_Quit();
-        return -1;
+        log_msg("Setting SDL GL attributes for GLES 1.1...");
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 1);
+        SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 5);
+        SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 6);
+        SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 5);
+        SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 16);
+        SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+        SDL_GL_SetAttribute(SDL_GL_SWAP_CONTROL, 1);  /* VSYNC enabled */
+
+        snprintf(vmode_msg, sizeof(vmode_msg),
+                 "SDL_SetVideoMode %dx%d OPENGL|FULLSCREEN...", sw, sh);
+        log_msg(vmode_msg);
+        g_screen = SDL_SetVideoMode(sw, sh, 0,
+                                    SDL_OPENGL | SDL_FULLSCREEN);
+        if (g_screen == NULL) {
+            snprintf(errmsg, sizeof(errmsg), "SDL_SetVideoMode GL FAILED: %s",
+                     SDL_GetError());
+            log_msg(errmsg);
+            SDL_Quit();
+            return -1;
+        }
+        log_msg("SDL_SetVideoMode OK (GL)");
+
+        /* Set up basic OpenGL state */
+        log_msg("Setting up OpenGL state...");
+        glViewport(0, 0, sw, sh);
+        glMatrixMode(GL_PROJECTION);
+        glLoadIdentity();
+        glOrthof(0, sw, sh, 0, -1, 1);
+        glMatrixMode(GL_MODELVIEW);
+        glLoadIdentity();
+
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_LIGHTING);
+        glEnable(GL_TEXTURE_2D);
+
+        /* Clear both buffers */
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        SDL_GL_SwapBuffers();
+        glClear(GL_COLOR_BUFFER_BIT);
+        SDL_GL_SwapBuffers();
+        log_msg("OpenGL state initialized");
+
+        /* Initialize video subsystem (GL textures) */
+        log_msg("video_init...");
+        if (video_init(g_screen) != 0) {
+            log_msg("video_init FAILED");
+            SDL_Quit();
+            return -1;
+        }
+        log_msg("video_init OK");
+    } else {
+        /*
+         * Pre3 path: Software surface (no OpenGL)
+         * webOS 2.x SDL does not support SDL_OPENGL flag.
+         * Physical surface is portrait (480x800); sw_render rotates to
+         * logical landscape (800x480).
+         */
+        int phys_w = 480, phys_h = 800;
+        char vmode_msg[128];
+
+        snprintf(vmode_msg, sizeof(vmode_msg),
+                 "SDL_SetVideoMode %dx%d SWSURFACE...", phys_w, phys_h);
+        log_msg(vmode_msg);
+        g_screen = SDL_SetVideoMode(phys_w, phys_h, 16, SDL_SWSURFACE);
+        if (g_screen == NULL) {
+            snprintf(errmsg, sizeof(errmsg), "SDL_SetVideoMode SW FAILED: %s",
+                     SDL_GetError());
+            log_msg(errmsg);
+            SDL_Quit();
+            return -1;
+        }
+        {
+            char info[128];
+            snprintf(info, sizeof(info),
+                     "SDL_SetVideoMode OK (SW): %dx%d bpp=%d",
+                     g_screen->w, g_screen->h,
+                     g_screen->format->BitsPerPixel);
+            log_msg(info);
+        }
+
+        /* Initialize software renderer (landscape rotation) */
+        sw_init(g_screen);
+        sw_clear(0, 0, 0);
+        sw_flip();
+        log_msg("Pre3: sw_init OK");
+
+        /* Initialize video (palette LUTs only, no GL textures) */
+        video_init(g_screen);
+        log_msg("Pre3: video_init OK (palettes only)");
     }
-    log_msg("SDL_SetVideoMode OK");
-
-    /* Set up basic OpenGL state */
-    log_msg("Setting up OpenGL state...");
-    glViewport(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    glOrthof(0, SCREEN_WIDTH, SCREEN_HEIGHT, 0, -1, 1);
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
-
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_LIGHTING);
-    glEnable(GL_TEXTURE_2D);
-
-    /* Clear both buffers */
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-    SDL_GL_SwapBuffers();
-    glClear(GL_COLOR_BUFFER_BIT);
-    SDL_GL_SwapBuffers();
-    log_msg("OpenGL state initialized");
 
     SDL_ShowCursor(SDL_DISABLE);
-
-    /* Initialize video subsystem */
-    log_msg("video_init...");
-    if (video_init(g_screen) != 0) {
-        log_msg("video_init FAILED");
-        SDL_Quit();
-        return -1;
-    }
-    log_msg("video_init OK");
 
     /* Initialize audio subsystem */
     log_msg("audio_init...");
     if (audio_init() != 0) {
         log_msg("audio_init FAILED");
-        video_shutdown();
+        if (device_has_gl()) video_shutdown();
         SDL_Quit();
         return -1;
     }
@@ -372,6 +404,13 @@ static void launch_selected_rom(void)
 
     if (!path) {
         log_msg("launch_selected_rom: no path");
+        return;
+    }
+
+    /* Final file-existence check — catches all code paths */
+    if (access(path, F_OK) != 0) {
+        log_msg("launch_selected_rom: file not found");
+        filepicker_show_notfound();
         return;
     }
 
@@ -601,7 +640,7 @@ static void main_loop(void)
                 input_show_notification(video_get_zoom_label());
             }
 
-            {
+            if (device_has_gl()) {
                 int popup_vis = input_options_popup_visible() || input_confirm_visible() || input_autosave_warn_visible();
 
                 if (g_emulator_running && machine_is_loaded()) {
@@ -647,6 +686,42 @@ static void main_loop(void)
                         /* Throttle when popup visible and paused */
                         if (popup_vis && g_emulator_paused)
                             usleep(33000);  /* ~30fps while popup shown */
+                    } else {
+                        usleep(500);
+                    }
+                }
+            } else {
+                /* Pre3: software rendering path */
+                if (g_emulator_running && machine_is_loaded()) {
+                    int popup_vis = input_options_popup_visible() || input_confirm_visible() || input_autosave_warn_visible();
+
+                    if (g_frame_ready || popup_vis) {
+                        __sync_synchronize();
+
+                        if (!video_sw_is_fullscreen())
+                            sw_clear(0, 0, 0);
+                        video_render_frame_sw();
+                        input_draw_controls_sw();
+                        input_draw_popup_sw();
+
+                        /* Touch-aware flip: brief delay lets SDL
+                         * compositor finish before we request flip,
+                         * reducing multi-frame stalls during touch. */
+                        if (g_touch_active > 0)
+                            usleep(1000);
+
+                        sw_flip();
+
+                        input_tick();
+
+                        if (g_frame_ready) {
+                            g_frame_ready = 0;
+                            g_frames_rendered++;
+                        }
+                        g_perf_frame_count++;
+
+                        if (popup_vis && g_emulator_paused)
+                            usleep(33000);
                     } else {
                         usleep(500);
                     }
@@ -758,6 +833,7 @@ static uint64_t process_events(void)
 
     while (events_processed < 32) {
         int has_event;
+        int tx, ty;  /* transformed touch coords */
 
         /* Time-based throttle: don't let PollEvent starve the renderer */
         if (get_time_us() - poll_start > 2000) break;  /* 2ms max */
@@ -773,47 +849,66 @@ static uint64_t process_events(void)
 
             case SDL_MOUSEBUTTONDOWN:
                 g_touch_active++;
-                if (g_app_state == APP_STATE_FILEPICKER) {
-                    filepicker_touch_down(event.button.x, event.button.y);
+                /* Pre3: rotate portrait touch to landscape coords */
+                if (!device_has_gl()) {
+                    tx = event.button.y;
+                    ty = 479 - event.button.x;
                 } else {
-                    input_handle_touch_down(event.button.which,
-                                            event.button.x, event.button.y);
+                    tx = event.button.x;
+                    ty = event.button.y;
+                }
+                if (g_app_state == APP_STATE_FILEPICKER) {
+                    filepicker_touch_down(tx, ty);
+                } else {
+                    input_handle_touch_down(event.button.which, tx, ty);
                 }
                 events_processed++;
                 break;
 
             case SDL_MOUSEBUTTONUP:
                 if (g_touch_active > 0) g_touch_active--;
+                if (!device_has_gl()) {
+                    tx = event.button.y;
+                    ty = 479 - event.button.x;
+                } else {
+                    tx = event.button.x;
+                    ty = event.button.y;
+                }
                 if (g_app_state == APP_STATE_FILEPICKER) {
-                    if (filepicker_touch_up(event.button.x, event.button.y)) {
+                    if (filepicker_touch_up(tx, ty)) {
                         launch_selected_rom();
                     }
                 } else {
-                    input_handle_touch_up(event.button.which,
-                                          event.button.x, event.button.y);
+                    input_handle_touch_up(event.button.which, tx, ty);
                 }
                 events_processed++;
                 break;
 
             case SDL_MOUSEMOTION:
+                if (!device_has_gl()) {
+                    tx = event.motion.y;
+                    ty = 479 - event.motion.x;
+                } else {
+                    tx = event.motion.x;
+                    ty = event.motion.y;
+                }
                 if (g_app_state == APP_STATE_FILEPICKER) {
                     picker_had_motion = 1;
-                    picker_motion_x = event.motion.x;
-                    picker_motion_y = event.motion.y;
+                    picker_motion_x = tx;
+                    picker_motion_y = ty;
                 } else {
                     /* Touch dedup: skip identical position within time window */
                     int finger = event.motion.which & 7;  /* clamp to 0-7 */
                     uint64_t now = get_time_us();
-                    if (event.motion.x == g_touch_dedup[finger].x &&
-                        event.motion.y == g_touch_dedup[finger].y &&
+                    if (tx == g_touch_dedup[finger].x &&
+                        ty == g_touch_dedup[finger].y &&
                         now - g_touch_dedup[finger].time_us < TOUCH_DEDUP_WINDOW_US) {
                         g_touch_dedup_count++;
                     } else {
-                        g_touch_dedup[finger].x = event.motion.x;
-                        g_touch_dedup[finger].y = event.motion.y;
+                        g_touch_dedup[finger].x = tx;
+                        g_touch_dedup[finger].y = ty;
                         g_touch_dedup[finger].time_us = now;
-                        input_handle_touch_move(event.motion.which,
-                                                event.motion.x, event.motion.y);
+                        input_handle_touch_move(event.motion.which, tx, ty);
                     }
                 }
                 events_processed++;
@@ -845,9 +940,11 @@ static uint64_t process_events(void)
                         audio_pause();
                     } else {
                         log_msg("Focus gained - resuming");
-                        glClear(GL_COLOR_BUFFER_BIT);
-                        SDL_GL_SwapBuffers();
-                        glClear(GL_COLOR_BUFFER_BIT);
+                        if (device_has_gl()) {
+                            glClear(GL_COLOR_BUFFER_BIT);
+                            SDL_GL_SwapBuffers();
+                            glClear(GL_COLOR_BUFFER_BIT);
+                        }
                         if (g_app_state == APP_STATE_EMULATOR) {
                             audio_resume();
                         }
