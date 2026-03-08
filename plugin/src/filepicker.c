@@ -407,8 +407,6 @@ static void load_settings(void)
             input_set_autosave_ask(atoi(line + 13));
         } else if (strncmp(line, "control_dim=", 12) == 0) {
             input_set_control_dim(atoi(line + 12));
-        } else if (strncmp(line, "keyboard=", 9) == 0) {
-            g_keyboard_detected = atoi(line + 9);
         }
     }
     fclose(f);
@@ -431,9 +429,6 @@ static void save_settings(void)
     fprintf(f, "autosave=%d\n", input_get_autosave());
     fprintf(f, "autosave_ask=%d\n", input_get_autosave_ask());
     fprintf(f, "control_dim=%d\n", input_get_control_dim());
-    if (g_keyboard_detected) {
-        fprintf(f, "keyboard=1\n");
-    }
     fclose(f);
 }
 
@@ -1709,12 +1704,12 @@ static void draw_save_popup(void)
 /* Delete confirmation popup (same dimensions as save popup) */
 static void draw_notfound_popup(void)
 {
-    int popup_w, popup_h, popup_x, popup_y, tw;
+    int popup_w, popup_h, popup_x, popup_y, tw, text_y;
 
     if (!g_notfound_visible) return;
 
     popup_w = 440;
-    popup_h = 60;
+    popup_h = 80;
     popup_x = (FP_SCREEN_W - popup_w) / 2;
     popup_y = (FP_SCREEN_H - popup_h) / 2;
 
@@ -1725,21 +1720,26 @@ static void draw_notfound_popup(void)
     draw_rect_outline(popup_x, popup_y, popup_w, popup_h,
                       1.0f, 0.5f, 0.15f, 0.8f);
 
-    tw = font_string_width("The game file was missing", 2);
-    font_draw_string("The game file was missing",
-                     popup_x + (popup_w - tw) / 2,
-                     popup_y + (popup_h - 16) / 2, 2,
+    text_y = popup_y + 14;
+    tw = font_string_width("Oops! I can't find the last", 2);
+    font_draw_string("Oops! I can't find the last",
+                     popup_x + (popup_w - tw) / 2, text_y, 2,
+                     1.0f, 0.5f, 0.15f, 1.0f);
+    text_y += 24;
+    tw = font_string_width("game rom you played.", 2);
+    font_draw_string("game rom you played.",
+                     popup_x + (popup_w - tw) / 2, text_y, 2,
                      1.0f, 0.5f, 0.15f, 1.0f);
 }
 
 static void draw_notfound_popup_sw(void)
 {
-    int popup_w, popup_h, popup_x, popup_y, tw;
+    int popup_w, popup_h, popup_x, popup_y, tw, text_y;
 
     if (!g_notfound_visible) return;
 
     popup_w = 440;
-    popup_h = 60;
+    popup_h = 80;
     popup_x = (FP_SCREEN_W - popup_w) / 2;
     popup_y = (FP_SCREEN_H - popup_h) / 2;
 
@@ -1747,10 +1747,14 @@ static void draw_notfound_popup_sw(void)
     sw_fill_rect(popup_x - 1, popup_y - 1, popup_w + 2, popup_h + 2, 255, 128, 38);
     sw_fill_rect(popup_x, popup_y, popup_w, popup_h, 0, 0, 0);
 
-    tw = sw_string_width("The game file was missing", 2);
-    sw_draw_string(popup_x + (popup_w - tw) / 2,
-                   popup_y + (popup_h - 16) / 2,
-                   "The game file was missing", 2, 255, 128, 38);
+    text_y = popup_y + 14;
+    tw = sw_string_width("Oops! I can't find the last", 2);
+    sw_draw_string(popup_x + (popup_w - tw) / 2, text_y,
+                   "Oops! I can't find the last", 2, 255, 128, 38);
+    text_y += 24;
+    tw = sw_string_width("game rom you played.", 2);
+    sw_draw_string(popup_x + (popup_w - tw) / 2, text_y,
+                   "game rom you played.", 2, 255, 128, 38);
 }
 
 static void draw_delete_confirm_popup(void)
@@ -3537,6 +3541,10 @@ int filepicker_touch_up(int x, int y)
                                 g_fp_aswarn_action = 0;
                                 g_fp_aswarn_visible = 1;
                             } else {
+                                if (input_get_autosave() && !input_get_autosave_ask()) {
+                                    /* Turning OFF with Ask OFF — reset Ask to ON */
+                                    input_set_autosave_ask(1);
+                                }
                                 input_set_autosave(!input_get_autosave());
                                 save_settings();
                             }

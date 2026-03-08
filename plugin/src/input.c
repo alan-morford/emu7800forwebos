@@ -1606,6 +1606,10 @@ static void input_popup_handle_touch(int x, int y)
                         g_autosave_warn_result = -1;
                         g_autosave_warn_visible = 1;
                     } else {
+                        if (g_autosave && !g_autosave_ask) {
+                            /* Turning OFF with Ask OFF — reset Ask to ON */
+                            g_autosave_ask = 1;
+                        }
                         g_autosave = !g_autosave;
                     }
                     break;

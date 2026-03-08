@@ -11,7 +11,7 @@
 #define UPDATER_H
 
 /* Must match appinfo.json version */
-#define APP_VERSION "1.7.0"
+#define APP_VERSION "1.7.1"
 
 /* Start the background update check (idempotent — no-op if already started) */
 void updater_check_start(void);
