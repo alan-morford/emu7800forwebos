@@ -94,5 +94,9 @@ int input_get_autosave_ask(void);
 void input_set_autosave_ask(int val);
 int input_get_control_dim(void);
 void input_set_control_dim(int val);
+int  input_get_btn_size(void);
+void input_set_btn_size(int v);
+int  input_get_dpad_size(void);
+void input_set_dpad_size(int v);
 
 #endif /* INPUT_H */

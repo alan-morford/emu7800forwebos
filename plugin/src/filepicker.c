@@ -97,7 +97,7 @@ static int DIRASK_H;
 #define POPUP_TITLE_H 16
 #define POPUP_GAP     12
 #define DIRPICKER_TITLE_H  28  /* scale 3 title height */
-#define SETTINGS_ROWS        9
+#define SETTINGS_ROWS        5
 #define SETTINGS_TITLE_H     28  /* scale 3 title height (matches Options popup) */
 
 /* Entry type constants */
@@ -207,6 +207,7 @@ static int  g_recent_touch_start_y = 0;
 static float g_recent_scroll_at_start = 0.0f;
 static int  g_recent_touch_moved = 0;
 static int  RECENT_VISIBLE;    /* max visible items before scrolling */
+static int  RECENT_CAP;        /* max stored entries (9=TouchPad, 32=Pre3) */
 static int  RECENT_ITEM_H;    /* item height in recent popup */
 static int  RECENT_SCALE;     /* font scale for recent items */
 
@@ -298,7 +299,7 @@ static void load_recent_list(void)
     int len;
     if (!f) return;
     g_recent_count = 0;
-    while (g_recent_count < RECENT_MAX && fgets(line, sizeof(line), f)) {
+    while (g_recent_count < RECENT_CAP && fgets(line, sizeof(line), f)) {
         len = strlen(line);
         if (len > 0 && line[len - 1] == '\n') line[len - 1] = '\0';
         if (line[0] == '\0') continue;
@@ -407,6 +408,10 @@ static void load_settings(void)
             input_set_autosave_ask(atoi(line + 13));
         } else if (strncmp(line, "control_dim=", 12) == 0) {
             input_set_control_dim(atoi(line + 12));
+        } else if (strncmp(line, "btn_size=", 9) == 0) {
+            input_set_btn_size(atoi(line + 9));
+        } else if (strncmp(line, "dpad_size=", 10) == 0) {
+            input_set_dpad_size(atoi(line + 10));
         }
     }
     fclose(f);
@@ -429,6 +434,8 @@ static void save_settings(void)
     fprintf(f, "autosave=%d\n", input_get_autosave());
     fprintf(f, "autosave_ask=%d\n", input_get_autosave_ask());
     fprintf(f, "control_dim=%d\n", input_get_control_dim());
+    fprintf(f, "btn_size=%d\n", input_get_btn_size());
+    fprintf(f, "dpad_size=%d\n", input_get_dpad_size());
     fclose(f);
 }
 
@@ -554,7 +561,7 @@ static void add_to_recent(const char *path, int type)
         g_recent_types[0] = tmp_type;
     } else if (found != 0) {
         /* Not in list - insert at front, shift others down */
-        int count = g_recent_count < RECENT_MAX ? g_recent_count : RECENT_MAX - 1;
+        int count = g_recent_count < RECENT_CAP ? g_recent_count : RECENT_CAP - 1;
         for (i = count; i > 0; i--) {
             strncpy(g_recent_paths[i], g_recent_paths[i - 1], MAX_PATH_LEN);
             g_recent_types[i] = g_recent_types[i - 1];
@@ -562,7 +569,7 @@ static void add_to_recent(const char *path, int type)
         strncpy(g_recent_paths[0], path, MAX_PATH_LEN - 1);
         g_recent_paths[0][MAX_PATH_LEN - 1] = '\0';
         g_recent_types[0] = type;
-        if (g_recent_count < RECENT_MAX) g_recent_count++;
+        if (g_recent_count < RECENT_CAP) g_recent_count++;
     }
     /* Update type (in case it changed) */
     g_recent_types[0] = type;
@@ -587,7 +594,7 @@ static void filepicker_init_layout(void)
         /* Popup dimensions (600px wide = 100px tap margin each side) */
         POPUP_W = 600;  POPUP_PAD = 16;
         POPUP_ITEM_H = 40;  POPUP_BTN_H = 40;
-        RECENT_VISIBLE = 5;  RECENT_ITEM_H = 48;  RECENT_SCALE = 3;
+        RECENT_VISIBLE = 5;  RECENT_ITEM_H = 48;  RECENT_SCALE = 3;  RECENT_CAP = 32;
         UPDATE_POPUP_W = 600;
         DIRASK_W = 600;  DIRASK_H = 140;
         DIRPICKER_W = 600;  DIRPICKER_VISIBLE = 5;  DIRPICKER_ITEM_H = 48;
@@ -607,7 +614,7 @@ static void filepicker_init_layout(void)
         /* Popup dimensions */
         POPUP_W = 600;  POPUP_PAD = 16;
         POPUP_ITEM_H = 40;  POPUP_BTN_H = 36;
-        RECENT_VISIBLE = 9;  RECENT_ITEM_H = 40;  RECENT_SCALE = 2;
+        RECENT_VISIBLE = 9;  RECENT_ITEM_H = 40;  RECENT_SCALE = 2;  RECENT_CAP = 9;
         UPDATE_POPUP_W = 600;
         DIRASK_W = 600;  DIRASK_H = 120;
         DIRPICKER_W = 600;  DIRPICKER_VISIBLE = 8;  DIRPICKER_ITEM_H = 40;
@@ -1360,88 +1367,7 @@ static void draw_settings_popup(void)
         btn_w += 16;
     }
 
-    /* Row 0: Scanlines — label left, toggle button right */
-    {
-        const char *state = video_get_scanlines() ? "ON" : "OFF";
-        btn_x = popup_x + SETTINGS_POPUP_W - POPUP_PAD - btn_w;
-
-        font_draw_string("Scanlines", popup_x + POPUP_PAD,
-                         row_y + (SETTINGS_ROW_H - 16) / 2, 2,
-                         0.9f, 0.9f, 0.9f, 0.9f);
-
-        glDisable(GL_TEXTURE_2D);
-        draw_rect(btn_x, row_y + (SETTINGS_ROW_H - RESUME_H) / 2,
-                  btn_w, RESUME_H, 0.3f, 0.3f, 0.3f, 0.6f);
-        tw = font_string_width(state, 2);
-        font_draw_string(state, btn_x + (btn_w - tw) / 2,
-                         row_y + (SETTINGS_ROW_H - RESUME_H) / 2 + 12, 2,
-                         1.0f, 0.5f, 0.15f, 1.0f);
-    }
-    row_y += SETTINGS_ROW_H;
-
-    /* Row 1: Scanline Brightness — label left, cycle button right */
-    {
-        const char *br_label = video_get_scanline_brightness_label();
-        btn_x = popup_x + SETTINGS_POPUP_W - POPUP_PAD - btn_w;
-
-        font_draw_string("Scanline Brightness", popup_x + POPUP_PAD,
-                         row_y + (SETTINGS_ROW_H - 16) / 2, 2,
-                         0.9f, 0.9f, 0.9f, 0.9f);
-
-        glDisable(GL_TEXTURE_2D);
-        draw_rect(btn_x, row_y + (SETTINGS_ROW_H - RESUME_H) / 2,
-                  btn_w, RESUME_H, 0.3f, 0.3f, 0.3f, 0.6f);
-        tw = font_string_width(br_label, 2);
-        font_draw_string(br_label, btn_x + (btn_w - tw) / 2,
-                         row_y + (SETTINGS_ROW_H - RESUME_H) / 2 + 12, 2,
-                         1.0f, 0.5f, 0.15f, 1.0f);
-    }
-    row_y += SETTINGS_ROW_H;
-
-    /* Row 2: Palette (7800) — label left, cycle button right */
-    {
-        const char *pal_label = video_get_palette_label();
-        btn_x = popup_x + SETTINGS_POPUP_W - POPUP_PAD - btn_w;
-
-        font_draw_string("Palette (7800)", popup_x + POPUP_PAD,
-                         row_y + (SETTINGS_ROW_H - 16) / 2, 2,
-                         0.9f, 0.9f, 0.9f, 0.9f);
-
-        glDisable(GL_TEXTURE_2D);
-        draw_rect(btn_x, row_y + (SETTINGS_ROW_H - RESUME_H) / 2,
-                  btn_w, RESUME_H, 0.3f, 0.3f, 0.3f, 0.6f);
-        tw = font_string_width(pal_label, 2);
-        font_draw_string(pal_label, btn_x + (btn_w - tw) / 2,
-                         row_y + (SETTINGS_ROW_H - RESUME_H) / 2 + 12, 2,
-                         1.0f, 0.5f, 0.15f, 1.0f);
-    }
-    row_y += SETTINGS_ROW_H;
-
-    /* Row 3: Control Brightness — label left, cycle button right */
-    {
-        const char *dim_label;
-        switch (input_get_control_dim()) {
-            case 1: dim_label = "DIM"; break;
-            case 2: dim_label = "DIMMER"; break;
-            default: dim_label = "BRIGHT"; break;
-        }
-        btn_x = popup_x + SETTINGS_POPUP_W - POPUP_PAD - btn_w;
-
-        font_draw_string("Control Brightness", popup_x + POPUP_PAD,
-                         row_y + (SETTINGS_ROW_H - 16) / 2, 2,
-                         0.9f, 0.9f, 0.9f, 0.9f);
-
-        glDisable(GL_TEXTURE_2D);
-        draw_rect(btn_x, row_y + (SETTINGS_ROW_H - RESUME_H) / 2,
-                  btn_w, RESUME_H, 0.3f, 0.3f, 0.3f, 0.6f);
-        tw = font_string_width(dim_label, 2);
-        font_draw_string(dim_label, btn_x + (btn_w - tw) / 2,
-                         row_y + (SETTINGS_ROW_H - RESUME_H) / 2 + 12, 2,
-                         1.0f, 0.5f, 0.15f, 1.0f);
-    }
-    row_y += SETTINGS_ROW_H;
-
-    /* Row 4: Auto-Save on Close — label left, toggle button right */
+    /* Row 0: Auto-Save on Close — label left, toggle button right */
     {
         const char *as_label = input_get_autosave() ? "ON" : "OFF";
         btn_x = popup_x + SETTINGS_POPUP_W - POPUP_PAD - btn_w;
@@ -1460,7 +1386,7 @@ static void draw_settings_popup(void)
     }
     row_y += SETTINGS_ROW_H;
 
-    /* Row 5: Ask Before Saving — label left, toggle button right (greyed when autosave OFF) */
+    /* Row 1: Ask Before Saving — label left, toggle button right (greyed when autosave OFF) */
     {
         const char *ask_label = input_get_autosave_ask() ? "ON" : "OFF";
         int greyed = !input_get_autosave();
@@ -1488,7 +1414,7 @@ static void draw_settings_popup(void)
     }
     row_y += SETTINGS_ROW_H;
 
-    /* Row 6: Change ROM Directory — label left, SET button right */
+    /* Row 2: Change ROM Directory — label left, SET button right */
     {
         btn_x = popup_x + SETTINGS_POPUP_W - POPUP_PAD - btn_w;
 
@@ -1506,7 +1432,7 @@ static void draw_settings_popup(void)
     }
     row_y += SETTINGS_ROW_H;
 
-    /* Row 7: Bug Report — label left, EMAIL button right */
+    /* Row 3: Bug Report — label left, EMAIL button right */
     {
         btn_x = popup_x + SETTINGS_POPUP_W - POPUP_PAD - btn_w;
 
@@ -1524,7 +1450,7 @@ static void draw_settings_popup(void)
     }
     row_y += SETTINGS_ROW_H;
 
-    /* Row 8: About EMU7800 — label left, INFO button right */
+    /* Row 4: About EMU7800 — label left, INFO button right */
     {
         btn_x = popup_x + SETTINGS_POPUP_W - POPUP_PAD - btn_w;
 
@@ -1986,18 +1912,12 @@ static void draw_settings_popup_sw(void)
         btn_x = popup_x + SETTINGS_POPUP_W - POPUP_PAD - btn_w;
 
         switch (row) {
-            case 0: row_label = "Scanlines"; btn_label = video_get_scanlines() ? "ON" : "OFF"; break;
-            case 1: row_label = "Scanline Brightness"; btn_label = video_get_scanline_brightness_label(); break;
-            case 2: row_label = "Palette (7800)"; btn_label = video_get_palette_label(); break;
-            case 3: row_label = "Control Brightness";
-                switch (input_get_control_dim()) { case 1: btn_label = "DIM"; break; case 2: btn_label = "DIMMER"; break; default: btn_label = "BRIGHT"; break; }
-                break;
-            case 4: row_label = "Auto-Save on Close"; btn_label = input_get_autosave() ? "ON" : "OFF"; break;
-            case 5: row_label = "Ask Before Saving"; btn_label = input_get_autosave_ask() ? "ON" : "OFF";
+            case 0: row_label = "Auto-Save on Close"; btn_label = input_get_autosave() ? "ON" : "OFF"; break;
+            case 1: row_label = "Ask Before Saving"; btn_label = input_get_autosave_ask() ? "ON" : "OFF";
                 greyed = !input_get_autosave(); break;
-            case 6: row_label = "Change ROM Directory"; btn_label = "SET"; break;
-            case 7: row_label = "Bug Report"; btn_label = "EMAIL"; break;
-            case 8: {
+            case 2: row_label = "Change ROM Directory"; btn_label = "SET"; break;
+            case 3: row_label = "Bug Report"; btn_label = "EMAIL"; break;
+            case 4: {
                 char about_label[64];
                 snprintf(about_label, sizeof(about_label), "About EMU7800 v%s", APP_VERSION);
                 row_label = about_label;
@@ -3505,35 +3425,7 @@ int filepicker_touch_up(int x, int y)
                 btn_x = popup_x + SETTINGS_POPUP_W - POPUP_PAD - btn_w;
 
                 switch (row_idx) {
-                    case 0: /* Scanlines toggle */
-                        if (x >= btn_x && x < btn_x + btn_w &&
-                            y >= btn_y_c && y < btn_y_c + RESUME_H) {
-                            video_set_scanlines(!video_get_scanlines());
-                            save_settings();
-                        }
-                        break;
-                    case 1: /* Scanline Brightness cycle */
-                        if (x >= btn_x && x < btn_x + btn_w &&
-                            y >= btn_y_c && y < btn_y_c + RESUME_H) {
-                            video_set_scanline_brightness((video_get_scanline_brightness() + 1) % 3);
-                            save_settings();
-                        }
-                        break;
-                    case 2: /* Palette cycle */
-                        if (x >= btn_x && x < btn_x + btn_w &&
-                            y >= btn_y_c && y < btn_y_c + RESUME_H) {
-                            video_set_maria_palette((video_get_maria_palette() + 1) % MARIA_PALETTE_COUNT);
-                            save_settings();
-                        }
-                        break;
-                    case 3: /* Control Brightness cycle */
-                        if (x >= btn_x && x < btn_x + btn_w &&
-                            y >= btn_y_c && y < btn_y_c + RESUME_H) {
-                            input_set_control_dim((input_get_control_dim() + 1) % 3);
-                            save_settings();
-                        }
-                        break;
-                    case 4: /* Auto-Save toggle */
+                    case 0: /* Auto-Save toggle */
                         if (x >= btn_x && x < btn_x + btn_w &&
                             y >= btn_y_c && y < btn_y_c + RESUME_H) {
                             if (!input_get_autosave() && !input_get_autosave_ask()) {
@@ -3550,7 +3442,7 @@ int filepicker_touch_up(int x, int y)
                             }
                         }
                         break;
-                    case 5: /* Ask Before Saving toggle (only if autosave ON) */
+                    case 1: /* Ask Before Saving toggle (only if autosave ON) */
                         if (x >= btn_x && x < btn_x + btn_w &&
                             y >= btn_y_c && y < btn_y_c + RESUME_H) {
                             if (input_get_autosave()) {
@@ -3565,7 +3457,7 @@ int filepicker_touch_up(int x, int y)
                             }
                         }
                         break;
-                    case 6: /* Change ROM Directory — SET */
+                    case 2: /* Change ROM Directory — SET */
                         if (x >= btn_x && x < btn_x + btn_w &&
                             y >= btn_y_c && y < btn_y_c + RESUME_H) {
                             g_settings_popup_visible = 0;
@@ -3573,7 +3465,7 @@ int filepicker_touch_up(int x, int y)
                             g_dirpicker_popup_visible = 1;
                         }
                         break;
-                    case 7: /* Bug Report — EMAIL */
+                    case 3: /* Bug Report — EMAIL */
                         if (x >= btn_x && x < btn_x + btn_w &&
                             y >= btn_y_c && y < btn_y_c + RESUME_H) {
                             g_settings_popup_visible = 0;
@@ -3585,7 +3477,7 @@ int filepicker_touch_up(int x, int y)
                             }
                         }
                         break;
-                    case 8: /* About */
+                    case 4: /* About */
                         if (x >= btn_x && x < btn_x + btn_w &&
                             y >= btn_y_c && y < btn_y_c + RESUME_H) {
                             g_settings_popup_visible = 0;

@@ -45,7 +45,7 @@ static int SAVE_X, SAVE_Y, SAVE_WIDTH, SAVE_HEIGHT;
 static int OPTIONS_X, OPTIONS_Y, OPTIONS_WIDTH, OPTIONS_HEIGHT;
 
 /* Popup layout variables — initialized by input_init_layout() */
-#define IGPOPUP_ROWS    7
+static int IGPOPUP_ROWS = 7;   /* set in input_init_layout() */
 static int IGPOPUP_W, IGPOPUP_PAD, IGPOPUP_TITLE_H, IGPOPUP_ROW_H;
 static int IGPOPUP_H, IGPOPUP_X, IGPOPUP_Y;
 static int IGPOPUP_BTN_W, IGPOPUP_BTN_H;
@@ -104,6 +104,8 @@ static int g_autosave_warn_action = 0;   /* 0=enabling autosave, 1=disabling ask
 static int g_autosave = 0;       /* 0=OFF, 1=ON */
 static int g_autosave_ask = 1;   /* 0=OFF, 1=ON */
 static int g_control_dim = 0;    /* 0=BRIGHT, 1=DIM, 2=DIMMER */
+static int g_btn_size = 1;   /* 0=Small, 1=Medium (default), 2=Large */
+static int g_dpad_size = 1;
 
 /* Keyboard state */
 static int g_keyboard_active = 0;  /* Set to 1 on first key event, cleared on touch */
@@ -252,6 +254,38 @@ static void release_target(TouchTarget target)
     }
 }
 
+/* Apply DPad/button size settings to layout variables (TouchPad only) */
+static void apply_control_sizes(int sw)
+{
+    static const int dpad_sizes[3] = {160, 200, 240};
+    static const int dpad_deadz[3] = { 24,  30,  36};
+    static const int fire_sizes[3] = { 77,  96, 115};
+
+    /* DPad: center stays fixed at (100, 668) */
+    DPAD_WIDTH  = dpad_sizes[g_dpad_size];
+    DPAD_HEIGHT = dpad_sizes[g_dpad_size];
+    DPAD_X      = 100 - DPAD_WIDTH / 2;
+    DPAD_Y      = 668 - DPAD_HEIGHT / 2;
+    DPAD_DEADZONE  = dpad_deadz[g_dpad_size];
+    DPAD_CENTER_X  = 100;
+    DPAD_CENTER_Y  = 668;
+
+    /* Fire buttons: right edge anchored at sw-30; center Y stays at 690 */
+    FIRE_SIZE = fire_sizes[g_btn_size];
+    FIRE_X    = (sw - 30) - FIRE_SIZE;
+    FIRE_Y    = 690 - FIRE_SIZE / 2;
+    FIRE2_SIZE = FIRE_SIZE;
+    FIRE2_X   = FIRE_X - 20 - FIRE_SIZE;
+    FIRE2_Y   = FIRE_Y;
+
+    /* Large buttons overlap OPTIONS: shrink label area */
+    if (g_btn_size == 2) {
+        OPTIONS_WIDTH = 76;
+    } else {
+        OPTIONS_WIDTH = BTN_BOT_WIDTH;
+    }
+}
+
 /* Initialize layout variables based on device type */
 static void input_init_layout(void)
 {
@@ -284,6 +318,7 @@ static void input_init_layout(void)
         IGPOPUP_W = 600;  IGPOPUP_PAD = 16;
         IGPOPUP_TITLE_H = 28;  IGPOPUP_ROW_H = 42;
         IGPOPUP_BTN_W = 112;  IGPOPUP_BTN_H = 40;
+        IGPOPUP_ROWS = 7;
 
         CONFIRM_W = 500;  CONFIRM_H = 130;
         CONFIRM_BTN_W = 80;  CONFIRM_BTN_H = 40;
@@ -315,6 +350,7 @@ static void input_init_layout(void)
         IGPOPUP_W = 460;  IGPOPUP_PAD = 16;
         IGPOPUP_TITLE_H = 28;  IGPOPUP_ROW_H = 44;
         IGPOPUP_BTN_W = 112;  IGPOPUP_BTN_H = 40;
+        IGPOPUP_ROWS = 9;
 
         CONFIRM_W = 420;  CONFIRM_H = 120;
         CONFIRM_BTN_W = 80;  CONFIRM_BTN_H = 36;
@@ -361,6 +397,8 @@ static void input_init_layout(void)
 
     ASWARN_X = (sw - ASWARN_W) / 2;
     ASWARN_Y = (sh - ASWARN_H) / 2;
+
+    if (!device_is_small()) apply_control_sizes(sw);
 }
 
 /* Initialize input */
@@ -590,11 +628,15 @@ void input_draw_controls_gl(void)
     }
 
     /* Draw D-pad background (semi-transparent white circle) */
-    draw_circle_gl(DPAD_CENTER_X, DPAD_CENTER_Y, 80, 1.0f, 1.0f, 1.0f, 0.25f * dim);
+    {
+        int drad = DPAD_WIDTH * 2 / 5;   /* 80 at medium (200), scales with size */
+        int carm = DPAD_WIDTH * 3 / 10;  /* 60 at medium, cross arm length */
+        draw_circle_gl(DPAD_CENTER_X, DPAD_CENTER_Y, drad, 1.0f, 1.0f, 1.0f, 0.25f * dim);
 
-    /* Draw cross lines in D-pad (orange) */
-    draw_rect_gl(DPAD_CENTER_X - 5, DPAD_CENTER_Y - 60, 10, 120, 1.0f, 0.5f, 0.15f, 0.25f * dim);
-    draw_rect_gl(DPAD_CENTER_X - 60, DPAD_CENTER_Y - 5, 120, 10, 1.0f, 0.5f, 0.15f, 0.25f * dim);
+        /* Draw cross lines in D-pad (orange) */
+        draw_rect_gl(DPAD_CENTER_X - 5, DPAD_CENTER_Y - carm, 10, carm * 2, 1.0f, 0.5f, 0.15f, 0.25f * dim);
+        draw_rect_gl(DPAD_CENTER_X - carm, DPAD_CENTER_Y - 5, carm * 2, 10, 1.0f, 0.5f, 0.15f, 0.25f * dim);
+    }
 
     /* Draw Fire button (orange) */
     if (fire_pressed) {
@@ -682,8 +724,9 @@ void input_draw_controls_gl(void)
     /* OPTIONS */
     draw_rect_gl(OPTIONS_X, OPTIONS_Y, OPTIONS_WIDTH, OPTIONS_HEIGHT, 0.3f, 0.3f, 0.3f, 0.4f * dim);
     {
-        int ow = font_string_width("OPTIONS", 2);
-        font_draw_string("OPTIONS", OPTIONS_X + (OPTIONS_WIDTH - ow) / 2, OPTIONS_Y + 12, 2,
+        const char *opt_label = (g_btn_size == 2) ? "OPT" : "OPTIONS";
+        int ow = font_string_width(opt_label, 2);
+        font_draw_string(opt_label, OPTIONS_X + (OPTIONS_WIDTH - ow) / 2, OPTIONS_Y + 12, 2,
                          1.0f, 0.5f, 0.15f, 0.5f * dim);
     }
 
@@ -910,19 +953,23 @@ void input_draw_popup_sw(void)
                     switch (g_control_dim) { case 1: label = "DIM"; break; case 2: label = "DIMMER"; break; default: label = "BRIGHT"; break; }
                     break;
                 case 3: row_label = "Scanlines"; label = video_get_scanlines() ? "ON" : "OFF"; break;
-                case 4: row_label = "Scanline Brightness"; label = video_get_scanline_brightness_label(); break;
+                case 4: row_label = "Scanline Brightness";
+                    label = video_get_scanline_brightness_label();
+                    if (!video_get_scanlines()) { lbl_r = 102; lbl_g = 102; lbl_b = 102; label_alpha = 128; }
+                    break;
                 case 5: row_label = "Palette (7800)"; label = video_get_palette_label(); break;
                 case 6: row_label = "Bug Report"; label = "EMAIL"; break;
             }
 
             /* Row label */
             if (row_label) {
-                uint8_t la = (row == 1 && !g_autosave) ? 102 : 230;
+                int sw_row_dim = (row == 1 && !g_autosave) || (row == 4 && !video_get_scanlines());
+                uint8_t la = sw_row_dim ? 102 : 230;
                 sw_draw_string_a(row_x, row_y + (IGPOPUP_ROW_H - 16) / 2, row_label, 2, 230, 230, 230, la);
             }
 
             /* Button background */
-            if (row == 1 && !g_autosave) {
+            if ((row == 1 && !g_autosave) || (row == 4 && !video_get_scanlines())) {
                 sw_fill_rect_a(btn_x, btn_y, IGPOPUP_BTN_W, IGPOPUP_BTN_H, 51, 51, 51, 77);
             } else {
                 sw_fill_rect_a(btn_x, btn_y, IGPOPUP_BTN_W, IGPOPUP_BTN_H, 77, 77, 77, 153);
@@ -1310,6 +1357,11 @@ void input_set_autosave_ask(int val) { g_autosave_ask = val ? 1 : 0; }
 int input_get_control_dim(void)   { return g_control_dim; }
 void input_set_control_dim(int val) { g_control_dim = (val >= 0 && val <= 2) ? val : 0; }
 
+int  input_get_btn_size(void)  { return g_btn_size; }
+void input_set_btn_size(int v) { g_btn_size = (v >= 0 && v <= 2) ? v : 1; }
+int  input_get_dpad_size(void)  { return g_dpad_size; }
+void input_set_dpad_size(int v) { g_dpad_size = (v >= 0 && v <= 2) ? v : 1; }
+
 int input_autosave_warn_visible(void) { return g_autosave_warn_visible; }
 int input_autosave_warn_result(void)  { return g_autosave_warn_result; }
 
@@ -1378,18 +1430,29 @@ void input_draw_popup_gl(void)
                     }
                     break;
                 case 3:
+                    row_label = "Button Size";
+                    label = g_btn_size == 0 ? "SMALL" : g_btn_size == 1 ? "MEDIUM" : "LARGE";
+                    break;
+                case 4:
+                    row_label = "DPad Size";
+                    label = g_dpad_size == 0 ? "SMALL" : g_dpad_size == 1 ? "MEDIUM" : "LARGE";
+                    break;
+                case 5:
                     row_label = "Scanlines";
                     label = video_get_scanlines() ? "ON" : "OFF";
                     break;
-                case 4:
+                case 6:
                     row_label = "Scanline Brightness";
                     label = video_get_scanline_brightness_label();
+                    if (!video_get_scanlines()) {
+                        lbl_r = 0.4f; lbl_g = 0.4f; lbl_b = 0.4f; lbl_a = 0.5f;
+                    }
                     break;
-                case 5:
+                case 7:
                     row_label = "Palette (7800)";
                     label = video_get_palette_label();
                     break;
-                case 6:
+                case 8:
                     row_label = "Bug Report";
                     label = "EMAIL";
                     break;
@@ -1397,13 +1460,14 @@ void input_draw_popup_gl(void)
 
             /* Row label (white text, vertically centered) */
             if (row_label) {
+                int row_dim = (row == 1 && !g_autosave) || (row == 6 && !video_get_scanlines());
                 font_draw_string(row_label, row_x,
                                  row_y + (IGPOPUP_ROW_H - 16) / 2, 2,
-                                 0.9f, 0.9f, 0.9f, (row == 1 && !g_autosave) ? 0.4f : 0.9f);
+                                 0.9f, 0.9f, 0.9f, row_dim ? 0.4f : 0.9f);
             }
 
             /* Button background */
-            if (row == 1 && !g_autosave) {
+            if ((row == 1 && !g_autosave) || (row == 6 && !video_get_scanlines())) {
                 draw_rect_gl(btn_x, btn_y, IGPOPUP_BTN_W, IGPOPUP_BTN_H,
                              0.2f, 0.2f, 0.2f, 0.3f);
             } else {
@@ -1592,13 +1656,17 @@ static void input_popup_handle_touch(int x, int y)
 
         /* Hit-test row buttons */
         for (row = 0; row < IGPOPUP_ROWS; row++) {
+            int effective_row;
             int row_y = IGPOPUP_Y + IGPOPUP_PAD + IGPOPUP_TITLE_H + IGPOPUP_PAD + row * IGPOPUP_ROW_H;
             int btn_y = row_y + (IGPOPUP_ROW_H - IGPOPUP_BTN_H) / 2;
 
             if (!point_in_rect(x, y, btn_x, btn_y, IGPOPUP_BTN_W, IGPOPUP_BTN_H))
                 continue;
 
-            switch (row) {
+            /* Pre3 skips Button Size (3) and DPad Size (4) rows, so offset */
+            effective_row = (device_is_small() && row >= 3) ? row + 2 : row;
+
+            switch (effective_row) {
                 case 0: /* Auto-Save toggle */
                     if (!g_autosave && !g_autosave_ask) {
                         /* Turning ON with Ask OFF — show warning */
@@ -1628,16 +1696,27 @@ static void input_popup_handle_touch(int x, int y)
                 case 2: /* Control Brightness cycle */
                     g_control_dim = (g_control_dim + 1) % 3;
                     break;
-                case 3: /* Scanlines toggle */
+                case 3: /* Button Size cycle */
+                    g_btn_size = (g_btn_size + 1) % 3;
+                    apply_control_sizes(device_screen_width());
+                    filepicker_save_settings();
+                    break;
+                case 4: /* DPad Size cycle */
+                    g_dpad_size = (g_dpad_size + 1) % 3;
+                    apply_control_sizes(device_screen_width());
+                    filepicker_save_settings();
+                    break;
+                case 5: /* Scanlines toggle */
                     video_set_scanlines(!video_get_scanlines());
                     break;
-                case 4: /* Scanline Brightness cycle */
-                    video_set_scanline_brightness((video_get_scanline_brightness() + 1) % 3);
+                case 6: /* Scanline Brightness cycle (disabled when scanlines off) */
+                    if (video_get_scanlines())
+                        video_set_scanline_brightness((video_get_scanline_brightness() + 1) % 3);
                     break;
-                case 5: /* Palette cycle */
+                case 7: /* Palette cycle */
                     video_set_maria_palette((video_get_maria_palette() + 1) % 3);
                     break;
-                case 6: /* Bug Report email */
+                case 8: /* Bug Report email */
                     g_options_popup_visible = 0;
                     filepicker_save_settings();
                     {
