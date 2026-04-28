@@ -64,6 +64,14 @@ static const uint8_t div31[31] = {
 /* 9-bit poly (random) */
 static uint8_t bit9[511];
 
+/* DC-blocking high-pass filter: y[n] = x[n] - x[n-1] + R * y[n-1]
+ * R = 32735/32768 ≈ 0.999, cutoff ~5 Hz — removes DC bias without
+ * affecting audible content. Uses fixed-point shift for the R multiply. */
+#define DC_R_NUM 32735
+#define DC_R_SHIFT 15   /* denominator = 2^15 = 32768 */
+static int32_t g_dc_x_prev = 0;
+static int32_t g_dc_y_prev = 0;
+
 /* Channel state */
 static uint8_t audc[2];
 static uint8_t audf[2];
@@ -116,6 +124,8 @@ void tiasound_reset(void)
 
     g_buffer_index = 0;
     g_phase_accum = 0;
+    g_dc_x_prev = 0;
+    g_dc_y_prev = 0;
     memset(g_audio_buffer, 0, sizeof(g_audio_buffer));
 }
 
@@ -228,8 +238,16 @@ void tiasound_render(int16_t *buffer, int num_samples)
             tick_channel(1);
         }
 
-        /* Mix and output */
-        buffer[i] = (int16_t)((output_vol[0] + output_vol[1]) * 1024);
+        /* Mix then apply DC-blocking filter */
+        {
+            int32_t x = (int32_t)((output_vol[0] + output_vol[1]) * 1024);
+            int32_t y = x - g_dc_x_prev + ((DC_R_NUM * g_dc_y_prev) >> DC_R_SHIFT);
+            g_dc_x_prev = x;
+            g_dc_y_prev = y;
+            if (y >  32767) y =  32767;
+            if (y < -32768) y = -32768;
+            buffer[i] = (int16_t)y;
+        }
     }
 }
 

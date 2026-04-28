@@ -18,7 +18,7 @@
 extern void log_msg(const char *msg);
 
 /* Diagnostic logging for bank switching — limited to first N events */
-#define BANK_LOG_MAX 30
+#define BANK_LOG_MAX 100
 static int g_bank_log_count = 0;
 
 /* SC RAM diagnostic logging — limited to first N events */
@@ -1888,7 +1888,15 @@ void cart_write(Cart *cart, uint16_t addr, uint8_t data)
         case CART_7800_SG:
             /* SuperGame: write to $8000-$BFFF selects bank (0-7) */
             if (addr >= 0x8000 && addr < 0xC000) {
+                int old_sg_bank = cart->banks[2];
                 cart->banks[2] = data & 7;
+                if (g_bank_log_count < BANK_LOG_MAX) {
+                    char msg[80];
+                    snprintf(msg, sizeof(msg), "SG BANK: clk=%llu addr=$%04X data=$%02X banks[2]=%d->%d",
+                             (unsigned long long)machine_get_cpu_clock(), addr, data, old_sg_bank, cart->banks[2]);
+                    log_msg(msg);
+                    g_bank_log_count++;
+                }
             }
             break;
 
@@ -1898,14 +1906,30 @@ void cart_write(Cart *cart, uint16_t addr, uint8_t data)
              * Reference Cart78S9.cs: Bank[2] = (value & 7) + 1
              */
             if (addr >= 0x8000 && addr < 0xC000) {
+                int old_s9_bank = cart->banks[2];
                 cart->banks[2] = (data & 7) + 1;
+                if (g_bank_log_count < BANK_LOG_MAX) {
+                    char msg[80];
+                    snprintf(msg, sizeof(msg), "S9 BANK: clk=%llu addr=$%04X data=$%02X banks[2]=%d->%d",
+                             (unsigned long long)machine_get_cpu_clock(), addr, data, old_s9_bank, cart->banks[2]);
+                    log_msg(msg);
+                    g_bank_log_count++;
+                }
             }
             break;
 
         case CART_7800_SGR:
             /* SuperGame + RAM: bank select at $8000, RAM write at $4000 */
             if (addr >= 0x8000 && addr < 0xC000) {
+                int old_sgr_bank = cart->banks[2];
                 cart->banks[2] = data & 7;
+                if (g_bank_log_count < BANK_LOG_MAX) {
+                    char msg[80];
+                    snprintf(msg, sizeof(msg), "SGR BANK: clk=%llu addr=$%04X data=$%02X banks[2]=%d->%d",
+                             (unsigned long long)machine_get_cpu_clock(), addr, data, old_sgr_bank, cart->banks[2]);
+                    log_msg(msg);
+                    g_bank_log_count++;
+                }
             } else if (addr >= 0x4000 && addr < 0x8000 && cart->ram) {
                 cart->ram[addr & 0x3FFF] = data;
             }

@@ -46,9 +46,12 @@ static void draw_scanline_overlay(void);
 #define TEX_WIDTH_7800  512
 #define TEX_HEIGHT_7800 256
 
-/* 7800 visible scanlines */
+/* 7800 visible scanlines.
+ * START_LINE_7800=12: MARIA's pipeline outputs scanline N's content to framebuffer
+ * row N+1 (double-buffered hardware). First visible build is scanline 11 → row 12.
+ * Last visible build is scanline 252 → row 253. Read rows 12..253 for 242 lines. */
 #define VISIBLE_7800    242
-#define START_LINE_7800 11
+#define START_LINE_7800 12
 
 /* MAX_VISIBLE_LINES removed — active height is now dynamic via tia_get_active_height() */
 
@@ -80,13 +83,8 @@ static uint16_t g_tex_buf_7800[TEX_WIDTH_7800 * TEX_HEIGHT_7800];  /* 256KB */
 /* Palette switching state */
 static int g_maria_palette_index = MARIA_PALETTE_WARM;
 
-/* Scanline overlay state */
-static int g_scanlines_enabled = 0;
-#define SCANLINE_BRIGHT_LIGHT  0
-#define SCANLINE_BRIGHT_MEDIUM 1
-#define SCANLINE_BRIGHT_DARK   2
-#define SCANLINE_BRIGHT_COUNT  3
-static int g_scanline_brightness = SCANLINE_BRIGHT_MEDIUM;
+/* Scanline overlay state: 0=off, 1=light, 2=medium, 3=dark */
+static int g_scanline_mode = 0;
 static const float g_scanline_alpha[3] = { 0.37f, 0.55f, 0.75f };
 
 /* Pre-computed RGB565 palette LUTs - avoids 7 ALU ops per pixel */
@@ -382,7 +380,7 @@ void video_render_upload(void)
     }
 
     /* Draw scanline overlay if enabled */
-    if (g_scanlines_enabled) {
+    if (g_scanline_mode > 0) {
         draw_scanline_overlay();
     }
 
@@ -464,7 +462,7 @@ static void draw_scanline_overlay(void)
 
     glEnableClientState(GL_VERTEX_ARRAY);
     glDisableClientState(GL_TEXTURE_COORD_ARRAY);
-    glColor4f(0.0f, 0.0f, 0.0f, g_scanline_alpha[g_scanline_brightness]);
+    glColor4f(0.0f, 0.0f, 0.0f, g_scanline_alpha[g_scanline_mode - 1]);
     glVertexPointer(2, GL_FLOAT, 0, verts);
     glDrawArrays(GL_TRIANGLES, 0, vi / 2);
 
@@ -496,35 +494,35 @@ const char *video_get_palette_label(void)
 }
 
 /* Scanline toggle */
-void video_set_scanlines(int enabled)
+/* Scanline mode: 0=off, 1=light, 2=medium, 3=dark */
+void video_set_scanline_mode(int mode)
 {
-    g_scanlines_enabled = enabled ? 1 : 0;
+    if (mode < 0 || mode > 3) mode = 0;
+    g_scanline_mode = mode;
+}
+
+int video_get_scanline_mode(void)
+{
+    return g_scanline_mode;
 }
 
 int video_get_scanlines(void)
 {
-    return g_scanlines_enabled;
+    return g_scanline_mode > 0;
 }
 
-/* Scanline brightness */
-void video_set_scanline_brightness(int idx)
+void video_cycle_scanlines(void)
 {
-    if (idx < 0 || idx >= SCANLINE_BRIGHT_COUNT)
-        idx = SCANLINE_BRIGHT_MEDIUM;
-    g_scanline_brightness = idx;
+    g_scanline_mode = (g_scanline_mode + 1) % 4;
 }
 
-int video_get_scanline_brightness(void)
+const char *video_get_scanlines_label(void)
 {
-    return g_scanline_brightness;
-}
-
-const char *video_get_scanline_brightness_label(void)
-{
-    switch (g_scanline_brightness) {
-        case SCANLINE_BRIGHT_LIGHT: return "LIGHT";
-        case SCANLINE_BRIGHT_DARK:  return "DARK";
-        default:                    return "MEDIUM";
+    switch (g_scanline_mode) {
+        case 1: return "LIGHT";
+        case 2: return "MEDIUM";
+        case 3: return "DARK";
+        default: return "OFF";
     }
 }
 
@@ -647,10 +645,10 @@ void video_render_frame_sw(void)
     }
 
     /* Scanline overlay */
-    if (g_scanlines_enabled) {
+    if (g_scanline_mode > 0) {
         static const uint8_t alpha_lut[3] = { 94, 140, 191 };
         sw_draw_scanlines(g_sw_disp_x, g_sw_disp_y, g_sw_disp_w, g_sw_disp_h,
-                          alpha_lut[g_scanline_brightness]);
+                          alpha_lut[g_scanline_mode - 1]);
     }
 
 }

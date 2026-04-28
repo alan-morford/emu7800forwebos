@@ -4,7 +4,7 @@
  * EMU7800 PDK Application Entry Point
  * Standalone PDK app for webOS
  *
- * Uses dedicated emulator thread for consistent timing.
+ * Emulation runs directly in the main loop, driven by vsync.
  * Touch events update lock-free input state.
  * App starts in file picker, launches emulator on ROM selection.
  *
@@ -14,7 +14,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
-#include <pthread.h>
 #include <sys/time.h>
 #include <SDL.h>
 #include <GLES/gl.h>
@@ -33,37 +32,26 @@
 #define APP_STATE_FILEPICKER 0
 #define APP_STATE_EMULATOR   1
 
-/* Global state - volatile for thread visibility */
+/* Global state */
 static volatile int g_running = 0;
-static volatile int g_emulator_running = 0;
 static volatile int g_emulator_paused = 0;
 static int g_paused_for_popup = 0;
 static SDL_Surface *g_screen = NULL;
-static pthread_t g_emu_thread;
-static int g_emu_thread_created = 0;
 static int g_app_state = APP_STATE_FILEPICKER;
-
-/* Frame ready flag - set by emulator thread, cleared by render */
-static volatile int g_frame_ready = 0;
-
-/* Frame delivery diagnostics */
-static volatile int g_frames_produced = 0;  /* Frames completed by emulator */
-static volatile int g_frames_rendered = 0;  /* Frames displayed by renderer */
-static volatile int g_frames_skipped = 0;   /* Frames dropped (renderer too slow) */
 
 /* Performance instrumentation — accumulated per reporting interval */
 static uint64_t g_last_perf_log_time = 0;
-static uint64_t g_poll_time_total = 0;     /* Accumulated PollEvent time per interval */
-static uint64_t g_poll_time_max = 0;       /* Worst single PollEvent call */
-static uint64_t g_upload_time_total = 0;   /* Accumulated upload (convert+texsub+draw) time */
-static uint64_t g_upload_time_max = 0;     /* Worst single upload call */
-static uint64_t g_swap_time_total = 0;     /* Accumulated SwapBuffers time per interval */
-static uint64_t g_swap_time_max = 0;       /* Worst single SwapBuffers call */
-static uint64_t g_frame_time_max = 0;      /* Worst main-loop iteration */
-static int g_slow_frames = 0;             /* Iterations > 16ms */
-static int g_poll_event_count = 0;        /* Total events polled per interval */
-static int g_perf_frame_count = 0;        /* Frames rendered in this interval */
-static int g_touch_dedup_count = 0;       /* Motion events deduplicated */
+static uint64_t g_poll_time_total = 0;
+static uint64_t g_poll_time_max = 0;
+static uint64_t g_upload_time_total = 0;
+static uint64_t g_upload_time_max = 0;
+static uint64_t g_swap_time_total = 0;
+static uint64_t g_swap_time_max = 0;
+static uint64_t g_frame_time_max = 0;
+static int g_slow_frames = 0;
+static int g_poll_event_count = 0;
+static int g_perf_frame_count = 0;
+static int g_touch_dedup_count = 0;
 
 /* Touch-active tracking: >0 when any finger is touching the screen */
 static volatile int g_touch_active = 0;
@@ -93,7 +81,15 @@ static uint64_t get_time_us(void)
 
 void log_msg(const char *msg)
 {
-    (void)msg;
+    static FILE *logf = NULL;
+    static int log_bytes = 0;
+    if (!logf) {
+        logf = fopen("/media/internal/emu7800.log", "w");
+        if (!logf) return;
+    }
+    if (log_bytes > 2000000) return;
+    log_bytes += fprintf(logf, "%s\n", msg);
+    fflush(logf);
 }
 
 /* Forward declarations */
@@ -101,7 +97,6 @@ static int init_sdl(void);
 static void shutdown_sdl(void);
 static void main_loop(void);
 static uint64_t process_events(void);
-static void *emulator_thread(void *data);
 static void launch_selected_rom(void);
 static void return_to_filepicker(void);
 
@@ -110,7 +105,7 @@ int main(int argc, char *argv[])
     (void)argc;
     (void)argv;
 
-    log_msg("EMU7800 starting... [build: emu7800-v1.7.0-20260305]");
+    log_msg("EMU7800 starting... [build: emu7800-v1.8.0]");
 
     /* Detect device and initialize PDL (all PDL calls via dlsym in device.c) */
     device_init();
@@ -147,23 +142,8 @@ int main(int argc, char *argv[])
     g_app_state = APP_STATE_FILEPICKER;
     g_running = 1;
 
-    /* Enter main loop (handles events and rendering) */
+    /* Enter main loop (handles events, emulation, and rendering) */
     main_loop();
-
-    /* Signal emulator thread to stop */
-    g_running = 0;
-    g_emulator_running = 0;
-    if (g_emu_thread_created) {
-        log_msg("Waiting for emulator thread...");
-        pthread_join(g_emu_thread, NULL);
-        {
-            char msg[128];
-            snprintf(msg, sizeof(msg),
-                "FINAL FRAMESTATS: produced=%d rendered=%d skipped=%d",
-                g_frames_produced, g_frames_rendered, g_frames_skipped);
-            log_msg(msg);
-        }
-    }
 
     /* Cleanup */
     filepicker_shutdown();
@@ -177,82 +157,6 @@ int main(int argc, char *argv[])
     device_pdl_quit();
 
     return 0;
-}
-
-/*
- * Emulator thread - runs CPU, TIA, and audio at consistent 60 FPS.
- *
- * Uses simple frame pacing: run one frame, wait until next frame time.
- * No catch-up behavior - if we fall behind, we just maintain steady pace.
- */
-static void *emulator_thread(void *data)
-{
-    uint64_t next_frame_time;
-    uint64_t now;
-    const uint64_t target_frame_us = 16683ULL; /* ~59.94 FPS (NTSC) */
-    (void)data;
-
-    now = get_time_us();
-    next_frame_time = now + target_frame_us;
-
-    while (g_running && g_emulator_running) {
-        /* Skip if paused (app minimized) */
-        if (g_emulator_paused) {
-            usleep(50000);
-            now = get_time_us();
-            next_frame_time = now + target_frame_us;
-            g_frame_ready = 0;
-            continue;
-        }
-
-        /* Wait until it's time for the next frame */
-        now = get_time_us();
-        if (now < next_frame_time) {
-            uint64_t wait_time = next_frame_time - now;
-            if (wait_time > 1000) {
-                usleep(wait_time - 500);
-            } else if (wait_time > 100) {
-                usleep(100);
-            }
-            /* Spin-wait for final precision */
-            while (get_time_us() < next_frame_time) {
-                /* busy wait */
-            }
-        }
-
-        /* Schedule next frame - if we're late, schedule from now (no catch-up) */
-        now = get_time_us();
-        if (now > next_frame_time + target_frame_us) {
-            /* We're more than one frame behind - reset timing, no catch-up */
-            next_frame_time = now + target_frame_us;
-        } else {
-            next_frame_time += target_frame_us;
-        }
-
-        /* Non-blocking: if renderer hasn't consumed the previous frame,
-         * drop it and keep going.  The TIA/Maria double-buffer ensures the
-         * emulator can safely overwrite — memcpy in the renderer takes ~50us
-         * while a frame takes ~16ms, so two full frames cannot complete
-         * during a single memcpy.  This keeps audio fed even when GL stalls. */
-        if (g_frame_ready) {
-            g_frames_skipped++;
-        }
-
-        /* Run one frame of emulation */
-        if (machine_is_loaded()) {
-            machine_run_frame();
-
-            /* Feed audio buffer */
-            audio_update();
-
-            /* ARM DMB: ensure buffer swap visible before flag */
-            __sync_synchronize();
-            g_frame_ready = 1;
-            g_frames_produced++;
-        }
-    }
-
-    return NULL;
 }
 
 static int init_sdl(void)
@@ -456,24 +360,10 @@ static void launch_selected_rom(void)
     /* Check if save file exists for this ROM */
     input_set_save_exists(savestate_exists(path));
 
-    /* Resume audio (paused when returning to filepicker) */
+    /* Resume audio */
     audio_resume();
 
-    /* Start emulator */
-    g_emulator_running = 1;
     g_emulator_paused = 0;
-    g_frame_ready = 0;
-
-    if (!g_emu_thread_created) {
-        if (pthread_create(&g_emu_thread, NULL, emulator_thread, NULL) == 0) {
-            g_emu_thread_created = 1;
-            log_msg("Emulator thread created");
-        } else {
-            log_msg("Failed to create emulator thread!");
-            return;
-        }
-    }
-
     g_app_state = APP_STATE_EMULATOR;
 }
 
@@ -482,25 +372,8 @@ static void return_to_filepicker(void)
 {
     log_msg("Returning to file picker");
 
-    /* Stop emulator thread */
-    g_emulator_running = 0;
-    if (g_emu_thread_created) {
-        pthread_join(g_emu_thread, NULL);
-        g_emu_thread_created = 0;
-        {
-            char msg[128];
-            snprintf(msg, sizeof(msg),
-                "FINAL FRAMESTATS: produced=%d rendered=%d skipped=%d",
-                g_frames_produced, g_frames_rendered, g_frames_skipped);
-            log_msg(msg);
-        }
-    }
-
     /* Pause audio */
     audio_pause();
-
-    /* Clear frame state */
-    g_frame_ready = 0;
 
     /* Re-scan the directory we launched from (preserves scroll position) */
     filepicker_rescan();
@@ -509,10 +382,15 @@ static void return_to_filepicker(void)
 }
 
 /*
- * Main loop - handles SDL events and rendering.
+ * Main loop - handles SDL events, emulation, and rendering.
+ *
+ * Emulation runs directly in this loop, one frame per vsync.
+ * Vsync (SDL_GL_SWAP_CONTROL=1) provides hardware-accurate 60Hz pacing.
+ * Audio is fed immediately after each emulated frame, in the same thread,
+ * eliminating timing jitter between the CPU/TIA and audio domains.
  *
  * In FILEPICKER state: draws file picker, handles touch for selection.
- * In EMULATOR state: renders emulator frames, handles input.
+ * In EMULATOR state: emulates one frame, renders, handles input.
  */
 static void main_loop(void)
 {
@@ -608,7 +486,6 @@ static void main_loop(void)
                 log_msg("Save state requested");
                 g_emulator_paused = 1;
                 audio_pause();
-                usleep(50000); /* Let emulator thread settle */
                 if (savestate_save(g_current_rom_path) == 0) {
                     input_show_notification("Saved");
                     input_set_save_exists(1);
@@ -623,15 +500,12 @@ static void main_loop(void)
                     log_msg("Load state requested");
                     g_emulator_paused = 1;
                     audio_pause();
-                    usleep(50000); /* Let emulator thread settle */
                     if (savestate_load(g_current_rom_path) == 0) {
-                        g_frame_ready = 0; /* Force fresh frame */
                         input_show_notification("Loaded");
                     }
                     g_emulator_paused = 0;
                     audio_resume();
                 }
-                /* No save file: do nothing, no text */
             }
 
             /* Check for ZOOM button */
@@ -640,91 +514,77 @@ static void main_loop(void)
                 input_show_notification(video_get_zoom_label());
             }
 
+            /*
+             * Run one frame of emulation and feed audio — in the same thread,
+             * in the same timing domain as the vsync swap below.
+             * This ensures audio is generated at a predictable rate with no
+             * cross-thread jitter between CPU/TIA and the audio ring buffer.
+             */
+            if (!g_emulator_paused && machine_is_loaded()) {
+                machine_run_frame();
+                audio_update();
+            }
+
             if (device_has_gl()) {
                 int popup_vis = input_options_popup_visible() || input_confirm_visible() || input_autosave_warn_visible();
 
-                if (g_emulator_running && machine_is_loaded()) {
-                    if (g_frame_ready || popup_vis) {
-                        uint64_t upload_t0, upload_us, swap_t0, swap_us;
+                if (machine_is_loaded()) {
+                    uint64_t upload_t0, upload_us, swap_t0, swap_us;
 
-                        /* ARM DMB: ensure we see all prior stores */
-                        __sync_synchronize();
+                    /* Phase 1: convert + upload + draw (CPU + GPU work) */
+                    upload_t0 = get_time_us();
+                    video_render_upload();
+                    upload_us = get_time_us() - upload_t0;
 
-                        /* Phase 1: convert + upload + draw (CPU + GPU work) */
-                        upload_t0 = get_time_us();
-                        video_render_upload();
-                        upload_us = get_time_us() - upload_t0;
+                    g_upload_time_total += upload_us;
+                    if (upload_us > g_upload_time_max)
+                        g_upload_time_max = upload_us;
 
-                        g_upload_time_total += upload_us;
-                        if (upload_us > g_upload_time_max)
-                            g_upload_time_max = upload_us;
-
-                        /* Touch-aware swap: 1ms delay lets compositor finish GPU
-                         * work before we request a buffer swap, reducing the
-                         * chance of a multi-frame stall (45-80ms spikes). */
-                        if (g_touch_active > 0) {
-                            usleep(1000);
-                        }
-
-                        /* Phase 2: swap buffers (may block on VSYNC) */
-                        swap_t0 = get_time_us();
-                        video_render_swap();
-                        swap_us = get_time_us() - swap_t0;
-
-                        g_swap_time_total += swap_us;
-                        if (swap_us > g_swap_time_max)
-                            g_swap_time_max = swap_us;
-
-                        input_tick();
-
-                        if (g_frame_ready) {
-                            g_frame_ready = 0;
-                            g_frames_rendered++;
-                        }
-                        g_perf_frame_count++;
-
-                        /* Throttle when popup visible and paused */
-                        if (popup_vis && g_emulator_paused)
-                            usleep(33000);  /* ~30fps while popup shown */
-                    } else {
-                        usleep(500);
+                    /* Touch-aware swap: 1ms delay lets compositor finish GPU
+                     * work before we request a buffer swap, reducing the
+                     * chance of a multi-frame stall (45-80ms spikes). */
+                    if (g_touch_active > 0) {
+                        usleep(1000);
                     }
+
+                    /* Phase 2: swap buffers (blocks on VSYNC — this is our
+                     * 60Hz clock; emulation above runs once per swap) */
+                    swap_t0 = get_time_us();
+                    video_render_swap();
+                    swap_us = get_time_us() - swap_t0;
+
+                    g_swap_time_total += swap_us;
+                    if (swap_us > g_swap_time_max)
+                        g_swap_time_max = swap_us;
+
+                    input_tick();
+                    g_perf_frame_count++;
+
+                    /* Throttle when popup visible and paused */
+                    if (popup_vis && g_emulator_paused)
+                        usleep(33000);  /* ~30fps while popup shown */
                 }
             } else {
                 /* Pre3: software rendering path */
-                if (g_emulator_running && machine_is_loaded()) {
+                if (machine_is_loaded()) {
                     int popup_vis = input_options_popup_visible() || input_confirm_visible() || input_autosave_warn_visible();
 
-                    if (g_frame_ready || popup_vis) {
-                        __sync_synchronize();
+                    if (!video_sw_is_fullscreen())
+                        sw_clear(0, 0, 0);
+                    video_render_frame_sw();
+                    input_draw_controls_sw();
+                    input_draw_popup_sw();
 
-                        if (!video_sw_is_fullscreen())
-                            sw_clear(0, 0, 0);
-                        video_render_frame_sw();
-                        input_draw_controls_sw();
-                        input_draw_popup_sw();
+                    if (g_touch_active > 0)
+                        usleep(1000);
 
-                        /* Touch-aware flip: brief delay lets SDL
-                         * compositor finish before we request flip,
-                         * reducing multi-frame stalls during touch. */
-                        if (g_touch_active > 0)
-                            usleep(1000);
+                    sw_flip();
 
-                        sw_flip();
+                    input_tick();
+                    g_perf_frame_count++;
 
-                        input_tick();
-
-                        if (g_frame_ready) {
-                            g_frame_ready = 0;
-                            g_frames_rendered++;
-                        }
-                        g_perf_frame_count++;
-
-                        if (popup_vis && g_emulator_paused)
-                            usleep(33000);
-                    } else {
-                        usleep(500);
-                    }
+                    if (popup_vis && g_emulator_paused)
+                        usleep(33000);
                 }
             }
 
@@ -747,7 +607,6 @@ static void main_loop(void)
                     int perf_active = tia_get_active_height();
                     int perf_disp_off = 0;
                     int perf_disp_h;
-                    /* Mirror the CRT display window logic from video.c */
                     if (perf_vbo >= 0 && perf_vbo < 31) {
                         perf_disp_off = 31 - perf_vbo;
                         if (perf_disp_off >= perf_active) perf_disp_off = 0;
@@ -773,9 +632,6 @@ static void main_loop(void)
                         perf_active, perf_vbo, perf_disp_off, perf_disp_h);
                     log_msg(msg);
 
-                    /* Content bounds: bounding box of non-zero pixels in display buffer.
-                     * Rows/cols are absolute (buffer coordinates); subtract disp_off
-                     * for display-relative position. */
                     if (machine_get_type() != MACHINE_7800 &&
                         tia_scan_content_bounds(&cb_fr, &cb_lr, &cb_fc, &cb_lc) == 0) {
                         snprintf(msg, sizeof(msg),
@@ -814,14 +670,6 @@ static void main_loop(void)
 /*
  * Process SDL events.
  * Routes touch events to file picker or input based on app state.
- *
- * On webOS, each finger gets a unique ID in event.button.which /
- * event.motion.which. We pass this to the input layer for per-finger
- * tracking. The filepicker only needs single-touch, so it ignores IDs.
- *
- * Motion events are dispatched immediately per-finger (no coalescing)
- * so each finger's D-pad position is tracked independently.
- * For the filepicker, we still coalesce to the last motion position.
  */
 static uint64_t process_events(void)
 {
@@ -969,23 +817,22 @@ static uint64_t process_events(void)
     return get_time_us() - poll_start;
 }
 
-/* Start emulator */
+/* Start emulator (called from bridge.c JS handler) */
 void main_start_emulator(void)
 {
-    g_emulator_running = 1;
     g_emulator_paused = 0;
     audio_resume();
 }
 
-/* Stop emulator */
+/* Stop emulator (called from bridge.c JS handler) */
 void main_stop_emulator(void)
 {
-    g_emulator_running = 0;
+    g_emulator_paused = 1;
     audio_pause();
 }
 
-/* Check if emulator is running */
+/* Check if emulator is running (called from bridge.c JS handler) */
 int main_is_running(void)
 {
-    return g_emulator_running;
+    return g_app_state == APP_STATE_EMULATOR && !g_emulator_paused;
 }

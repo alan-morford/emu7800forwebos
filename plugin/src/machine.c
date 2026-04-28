@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "machine.h"
+#include "zip_load.h"
 #include "m6502.h"
 #include "tia.h"
 #include "tiasound.h"
@@ -451,36 +452,46 @@ void machine_shutdown(void)
 /* Load a ROM file */
 int machine_load_rom(const char *path, int machine_type)
 {
-    FILE *f;
     uint8_t *data;
     long size;
 
-    f = fopen(path, "rb");
-    if (!f) {
-        return -1;
-    }
+    if (machine_type == MACHINE_ZIP) {
+        /* Extract ROM from ZIP; detect machine type from inner filename */
+        char inner_name[64];
+        const char *dot;
+        data = zip_load_rom(path, &size, inner_name, sizeof(inner_name));
+        if (!data) return -1;
+        dot = strrchr(inner_name, '.');
+        if (dot && strcasecmp(dot, ".a78") == 0)
+            machine_type = MACHINE_7800;
+        else
+            machine_type = MACHINE_2600;
+    } else {
+        FILE *f = fopen(path, "rb");
+        if (!f) return -1;
 
-    fseek(f, 0, SEEK_END);
-    size = ftell(f);
-    fseek(f, 0, SEEK_SET);
+        fseek(f, 0, SEEK_END);
+        size = ftell(f);
+        fseek(f, 0, SEEK_SET);
 
-    if (size <= 0 || size > 512 * 1024) {
+        if (size <= 0 || size > 512 * 1024) {
+            fclose(f);
+            return -2;
+        }
+
+        data = (uint8_t *)malloc(size);
+        if (!data) {
+            fclose(f);
+            return -3;
+        }
+
+        if (fread(data, 1, size, f) != (size_t)size) {
+            free(data);
+            fclose(f);
+            return -4;
+        }
         fclose(f);
-        return -2;
     }
-
-    data = (uint8_t *)malloc(size);
-    if (!data) {
-        fclose(f);
-        return -3;
-    }
-
-    if (fread(data, 1, size, f) != (size_t)size) {
-        free(data);
-        fclose(f);
-        return -4;
-    }
-    fclose(f);
 
     /* Set machine type */
     g_machine_type = machine_type;

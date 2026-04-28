@@ -45,7 +45,7 @@ static int SAVE_X, SAVE_Y, SAVE_WIDTH, SAVE_HEIGHT;
 static int OPTIONS_X, OPTIONS_Y, OPTIONS_WIDTH, OPTIONS_HEIGHT;
 
 /* Popup layout variables — initialized by input_init_layout() */
-static int IGPOPUP_ROWS = 7;   /* set in input_init_layout() */
+static int IGPOPUP_ROWS = 6;   /* set in input_init_layout() */
 static int IGPOPUP_W, IGPOPUP_PAD, IGPOPUP_TITLE_H, IGPOPUP_ROW_H;
 static int IGPOPUP_H, IGPOPUP_X, IGPOPUP_Y;
 static int IGPOPUP_BTN_W, IGPOPUP_BTN_H;
@@ -318,7 +318,7 @@ static void input_init_layout(void)
         IGPOPUP_W = 600;  IGPOPUP_PAD = 16;
         IGPOPUP_TITLE_H = 28;  IGPOPUP_ROW_H = 42;
         IGPOPUP_BTN_W = 112;  IGPOPUP_BTN_H = 40;
-        IGPOPUP_ROWS = 7;
+        IGPOPUP_ROWS = 6;
 
         CONFIRM_W = 500;  CONFIRM_H = 130;
         CONFIRM_BTN_W = 80;  CONFIRM_BTN_H = 40;
@@ -350,7 +350,7 @@ static void input_init_layout(void)
         IGPOPUP_W = 460;  IGPOPUP_PAD = 16;
         IGPOPUP_TITLE_H = 28;  IGPOPUP_ROW_H = 44;
         IGPOPUP_BTN_W = 112;  IGPOPUP_BTN_H = 40;
-        IGPOPUP_ROWS = 9;
+        IGPOPUP_ROWS = 8;
 
         CONFIRM_W = 420;  CONFIRM_H = 120;
         CONFIRM_BTN_W = 80;  CONFIRM_BTN_H = 36;
@@ -952,24 +952,19 @@ void input_draw_popup_sw(void)
                 case 2: row_label = "Control Brightness";
                     switch (g_control_dim) { case 1: label = "DIM"; break; case 2: label = "DIMMER"; break; default: label = "BRIGHT"; break; }
                     break;
-                case 3: row_label = "Scanlines"; label = video_get_scanlines() ? "ON" : "OFF"; break;
-                case 4: row_label = "Scanline Brightness";
-                    label = video_get_scanline_brightness_label();
-                    if (!video_get_scanlines()) { lbl_r = 102; lbl_g = 102; lbl_b = 102; label_alpha = 128; }
-                    break;
-                case 5: row_label = "Palette (7800)"; label = video_get_palette_label(); break;
-                case 6: row_label = "Bug Report"; label = "EMAIL"; break;
+                case 3: row_label = "Scanlines"; label = video_get_scanlines_label(); break;
+                case 4: row_label = "Palette (7800)"; label = video_get_palette_label(); break;
+                case 5: row_label = "Bug Report"; label = "EMAIL"; break;
             }
 
             /* Row label */
             if (row_label) {
-                int sw_row_dim = (row == 1 && !g_autosave) || (row == 4 && !video_get_scanlines());
-                uint8_t la = sw_row_dim ? 102 : 230;
+                uint8_t la = (row == 1 && !g_autosave) ? 102 : 230;
                 sw_draw_string_a(row_x, row_y + (IGPOPUP_ROW_H - 16) / 2, row_label, 2, 230, 230, 230, la);
             }
 
             /* Button background */
-            if ((row == 1 && !g_autosave) || (row == 4 && !video_get_scanlines())) {
+            if (row == 1 && !g_autosave) {
                 sw_fill_rect_a(btn_x, btn_y, IGPOPUP_BTN_W, IGPOPUP_BTN_H, 51, 51, 51, 77);
             } else {
                 sw_fill_rect_a(btn_x, btn_y, IGPOPUP_BTN_W, IGPOPUP_BTN_H, 77, 77, 77, 153);
@@ -1439,20 +1434,13 @@ void input_draw_popup_gl(void)
                     break;
                 case 5:
                     row_label = "Scanlines";
-                    label = video_get_scanlines() ? "ON" : "OFF";
+                    label = video_get_scanlines_label();
                     break;
                 case 6:
-                    row_label = "Scanline Brightness";
-                    label = video_get_scanline_brightness_label();
-                    if (!video_get_scanlines()) {
-                        lbl_r = 0.4f; lbl_g = 0.4f; lbl_b = 0.4f; lbl_a = 0.5f;
-                    }
-                    break;
-                case 7:
                     row_label = "Palette (7800)";
                     label = video_get_palette_label();
                     break;
-                case 8:
+                case 7:
                     row_label = "Bug Report";
                     label = "EMAIL";
                     break;
@@ -1460,14 +1448,14 @@ void input_draw_popup_gl(void)
 
             /* Row label (white text, vertically centered) */
             if (row_label) {
-                int row_dim = (row == 1 && !g_autosave) || (row == 6 && !video_get_scanlines());
+                int row_dim = (row == 1 && !g_autosave);
                 font_draw_string(row_label, row_x,
                                  row_y + (IGPOPUP_ROW_H - 16) / 2, 2,
                                  0.9f, 0.9f, 0.9f, row_dim ? 0.4f : 0.9f);
             }
 
             /* Button background */
-            if ((row == 1 && !g_autosave) || (row == 6 && !video_get_scanlines())) {
+            if (row == 1 && !g_autosave) {
                 draw_rect_gl(btn_x, btn_y, IGPOPUP_BTN_W, IGPOPUP_BTN_H,
                              0.2f, 0.2f, 0.2f, 0.3f);
             } else {
@@ -1706,17 +1694,13 @@ static void input_popup_handle_touch(int x, int y)
                     apply_control_sizes(device_screen_width());
                     filepicker_save_settings();
                     break;
-                case 5: /* Scanlines toggle */
-                    video_set_scanlines(!video_get_scanlines());
+                case 5: /* Scanlines cycle: off->light->medium->dark->off */
+                    video_cycle_scanlines();
                     break;
-                case 6: /* Scanline Brightness cycle (disabled when scanlines off) */
-                    if (video_get_scanlines())
-                        video_set_scanline_brightness((video_get_scanline_brightness() + 1) % 3);
-                    break;
-                case 7: /* Palette cycle */
+                case 6: /* Palette cycle */
                     video_set_maria_palette((video_get_maria_palette() + 1) % 3);
                     break;
-                case 8: /* Bug Report email */
+                case 7: /* Bug Report email */
                     g_options_popup_visible = 0;
                     filepicker_save_settings();
                     {

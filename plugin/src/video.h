@@ -37,14 +37,12 @@ void video_set_maria_palette(int idx);
 int  video_get_maria_palette(void);
 const char *video_get_palette_label(void);
 
-/* Scanline overlay toggle */
-void video_set_scanlines(int enabled);
-int  video_get_scanlines(void);
-
-/* Scanline brightness (0=light, 1=medium, 2=dark) */
-void video_set_scanline_brightness(int idx);
-int  video_get_scanline_brightness(void);
-const char *video_get_scanline_brightness_label(void);
+/* Scanline overlay: 0=off, 1=light, 2=medium, 3=dark */
+void video_set_scanline_mode(int mode);
+int  video_get_scanline_mode(void);
+int  video_get_scanlines(void);       /* returns 1 if any mode active */
+void video_cycle_scanlines(void);     /* cycles off->light->medium->dark->off */
+const char *video_get_scanlines_label(void); /* "OFF"/"LIGHT"/"MEDIUM"/"DARK" */
 
 /* Software rendering path (Pre3) */
 void video_render_frame_sw(void);

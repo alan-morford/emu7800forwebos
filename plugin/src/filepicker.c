@@ -241,6 +241,7 @@ static int get_rom_type(const char *name)
     if (strcasecmp(dot, ".a26") == 0) return MACHINE_2600;
     if (strcasecmp(dot, ".a78") == 0) return MACHINE_7800;
     if (strcasecmp(dot, ".bin") == 0) return MACHINE_2600; /* default bin to 2600 */
+    if (strcasecmp(dot, ".zip") == 0) return MACHINE_ZIP;
     if (strcasecmp(dot, ".sav") == 0) return ENTRY_SAV;
     return ENTRY_FILE;
 }
@@ -397,11 +398,9 @@ static void load_settings(void)
             strncpy(g_default_romdir, line + 7, MAX_PATH_LEN - 1);
             g_default_romdir[MAX_PATH_LEN - 1] = '\0';
         } else if (strncmp(line, "scanlines=", 10) == 0) {
-            video_set_scanlines(atoi(line + 10));
+            video_set_scanline_mode(atoi(line + 10));
         } else if (strncmp(line, "palette=", 8) == 0) {
             video_set_maria_palette(atoi(line + 8));
-        } else if (strncmp(line, "brightness=", 11) == 0) {
-            video_set_scanline_brightness(atoi(line + 11));
         } else if (strncmp(line, "autosave=", 9) == 0) {
             input_set_autosave(atoi(line + 9));
         } else if (strncmp(line, "autosave_ask=", 13) == 0) {
@@ -428,8 +427,7 @@ static void save_settings(void)
     if (g_default_romdir[0] != '\0') {
         fprintf(f, "romdir=%s\n", g_default_romdir);
     }
-    fprintf(f, "scanlines=%d\n", video_get_scanlines());
-    fprintf(f, "brightness=%d\n", video_get_scanline_brightness());
+    fprintf(f, "scanlines=%d\n", video_get_scanline_mode());
     fprintf(f, "palette=%d\n", video_get_maria_palette());
     fprintf(f, "autosave=%d\n", input_get_autosave());
     fprintf(f, "autosave_ask=%d\n", input_get_autosave_ask());
@@ -1483,7 +1481,7 @@ static void draw_settings_popup(void)
 static void draw_about_popup(void)
 {
     static const char *lines[] = {
-        "EMU7800 is a 100% Claude.ai vibe-coded port",
+        "EMU7800 is a 100% Claude Code vibe-coded port",
         "by Alan Morford.",
         "",
         "EMU7800 was written by Mike Murphy.",
@@ -2017,7 +2015,7 @@ static void draw_save_popup_sw(void)
 static void draw_about_popup_sw(void)
 {
     static const char *lines[] = {
-        "EMU7800 is a 100% Claude.ai",
+        "EMU7800 is a 100% Claude Code",
         "vibe-coded port by Alan Morford.",
         "",
         "EMU7800 was written by",
@@ -2542,7 +2540,7 @@ static void filepicker_draw_sw(void)
                     basename[max_chars] = '\0';
                     strncat(basename, "...", MAX_NAME_LEN - 1 - max_chars);
                 }
-                sw_draw_string(name_x, next_y + (RESUME_H - 16) / 2, basename, 2, 230, 230, 230);
+                sw_draw_string(name_x, next_y + (RESUME_H - 16) / 2, basename, 2, 255, 255, 255);
             }
             next_y += RESUME_H + 4;
         }
@@ -2647,9 +2645,10 @@ static void filepicker_draw_sw(void)
             if (g_files[i].is_dir) {
                 sw_draw_string(MARGIN_X, item_y, disp, LIST_SCALE, 255, 128, 38);
             } else {
-                const char *ext = strrchr(g_files[i].name, '.');
-                if (ext && strcasecmp(ext, ".sav") == 0) {
+                if (g_files[i].type == ENTRY_SAV) {
                     sw_draw_string(MARGIN_X, item_y, disp, LIST_SCALE, 179, 77, 255);
+                } else if (g_files[i].type == MACHINE_ZIP) {
+                    sw_draw_string(MARGIN_X, item_y, disp, LIST_SCALE, 102, 204, 255); /* light blue */
                 } else {
                     sw_draw_string(MARGIN_X, item_y, disp, LIST_SCALE, 255, 255, 255);
                 }
@@ -2913,7 +2912,7 @@ void filepicker_draw(void)
                 strncat(basename, "...", MAX_NAME_LEN - 1 - max_chars);
             }
             font_draw_string(basename, name_x, RESUME_Y + 12, 2,
-                             0.9f, 0.9f, 0.9f, 0.9f);
+                             1.0f, 1.0f, 1.0f, 1.0f);
         }
     }
 
@@ -3021,10 +3020,12 @@ void filepicker_draw(void)
                 font_draw_string(disp, MARGIN_X, item_y, 2,
                                  1.0f, 0.5f, 0.15f, 1.0f);
             } else {
-                const char *ext = strrchr(g_files[i].name, '.');
-                if (ext && strcasecmp(ext, ".sav") == 0) {
+                if (g_files[i].type == ENTRY_SAV) {
                     font_draw_string(disp, MARGIN_X, item_y, 2,
                                      0.7f, 0.3f, 1.0f, 1.0f);
+                } else if (g_files[i].type == MACHINE_ZIP) {
+                    font_draw_string(disp, MARGIN_X, item_y, 2,
+                                     0.4f, 0.8f, 1.0f, 1.0f);  /* light blue */
                 } else {
                     font_draw_string(disp, MARGIN_X, item_y, 2,
                                      1.0f, 1.0f, 1.0f, 1.0f);

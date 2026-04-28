@@ -25,7 +25,7 @@ static uint64_t audio_get_time_us(void)
 /* Audio settings */
 /* TIA generates audio at 31440 Hz for NTSC (3.58MHz / 114) */
 #define AUDIO_SAMPLE_RATE  31440
-#define AUDIO_SAMPLES      512     /* ~16ms buffer - lower latency */
+#define AUDIO_SAMPLES      1024    /* ~32ms buffer - reduced underrun risk */
 #define AUDIO_CHANNELS     1
 
 /* Ring buffer for audio
@@ -73,8 +73,8 @@ static void audio_callback(void *userdata, Uint8 *stream, int len)
         if (interval > g_max_callback_interval) {
             g_max_callback_interval = interval;
         }
-        /* Expected interval ~16ms for 512 samples at 31440Hz */
-        if (interval > 25000) {  /* > 25ms is anomalous */
+        /* Expected interval ~32ms for 1024 samples at 31440Hz */
+        if (interval > 50000) {  /* > 50ms is anomalous */
             g_callback_interval_anomalies++;
         }
     }
@@ -161,8 +161,11 @@ int audio_init(void)
     g_ring_write = 0;
     g_audio_open = 1;
 
-    /* Start audio */
-    SDL_PauseAudio(0);
+    /* Start audio paused — audio_resume() starts playback once the emulator
+     * is running and the ring buffer has samples.  Starting unpaused here
+     * causes SDL to drain the empty buffer (silence) until the first ROM
+     * frame arrives, producing a loud pop at startup. */
+    SDL_PauseAudio(1);
 
     return 0;
 }

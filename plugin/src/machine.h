@@ -15,6 +15,7 @@
 /* Machine types */
 #define MACHINE_2600  0
 #define MACHINE_7800  1
+#define MACHINE_ZIP   2   /* ZIP archive — type detected from inner filename */
 
 /* Initialize the machine */
 void machine_init(void);
@@ -70,6 +71,9 @@ int machine_get_right_controller(void);
 
 /* Supercharger support: distinct access tracking */
 uint32_t machine_get_distinct_accesses(void);
+
+/* Current scanline from the machine loop (correct CPU-side view, not DMA-advanced) */
+int machine_get_7800_scanline(void);
 
 /* Supercharger support: direct RAM peek/poke (bypasses TIA/PIA decoding) */
 uint8_t machine_peek_ram(uint16_t addr);

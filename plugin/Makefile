@@ -39,7 +39,9 @@ SOURCES = \
 	src/filepicker.c \
 	src/savestate.c \
 	src/updater.c \
-	src/sw_render.c
+	src/sw_render.c \
+	src/zip_load.c \
+	src/puff.c
 
 # Object files and dependency files
 OBJECTS = $(SOURCES:.c=.o)
