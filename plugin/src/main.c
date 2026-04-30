@@ -15,6 +15,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/time.h>
+#include <pthread.h>
 #include <SDL.h>
 #include <GLES/gl.h>
 #include "machine.h"
@@ -67,6 +68,21 @@ static TouchDedup g_touch_dedup[8];  /* Per finger ID (0-7) */
 /* Current ROM path for save state */
 static char g_current_rom_path[512] = {0};
 
+/*
+ * Pre3 emulator thread — runs machine_run_frame() + audio_update() independently
+ * of the SW render loop, because SDL_SWSURFACE flip has no vsync.  On the
+ * TouchPad the inline path is fine (SDL_GL_SwapBuffers blocks on vsync).
+ */
+static pthread_t         g_emu_thread;
+static volatile int      g_emu_thread_running = 0;
+static volatile int      g_emu_frame_active   = 0;
+
+/* Frame handoff (Pre3): set by emulator thread, cleared by render thread */
+static volatile int      g_frame_ready    = 0;
+static volatile int      g_frames_produced = 0;
+static volatile int      g_frames_rendered = 0;
+static volatile int      g_frames_skipped  = 0;
+
 
 /*
  * Get current time in microseconds using gettimeofday.
@@ -99,13 +115,16 @@ static void main_loop(void);
 static uint64_t process_events(void);
 static void launch_selected_rom(void);
 static void return_to_filepicker(void);
+static void emu_thread_start(void);
+static void emu_thread_stop(void);
+static void emu_thread_wait_idle(void);
 
 int main(int argc, char *argv[])
 {
     (void)argc;
     (void)argv;
 
-    log_msg("EMU7800 starting... [build: emu7800-v1.8.0]");
+    log_msg("EMU7800 starting... [build: emu7800-v1.8.1]");
 
     /* Detect device and initialize PDL (all PDL calls via dlsym in device.c) */
     device_init();
@@ -144,6 +163,11 @@ int main(int argc, char *argv[])
 
     /* Enter main loop (handles events, emulation, and rendering) */
     main_loop();
+
+    /* Ensure Pre3 emulator thread is stopped before tearing down machine */
+    if (g_emu_thread_running) {
+        emu_thread_stop();
+    }
 
     /* Cleanup */
     filepicker_shutdown();
@@ -298,6 +322,89 @@ static void shutdown_sdl(void)
     SDL_Quit();
 }
 
+/* --- Pre3 emulator thread ------------------------------------------------ */
+
+static void *emu_thread_func(void *arg)
+{
+    uint64_t next_frame_time;
+    uint64_t now;
+    const uint64_t target_frame_us = 16683ULL; /* ~59.94 fps NTSC */
+    (void)arg;
+
+    now = get_time_us();
+    next_frame_time = now + target_frame_us;
+
+    while (g_emu_thread_running) {
+        if (g_emulator_paused) {
+            usleep(50000);
+            now = get_time_us();
+            next_frame_time = now + target_frame_us;
+            g_frame_ready = 0;
+            continue;
+        }
+
+        /* Wait until next frame time: coarse sleep then spin for precision */
+        now = get_time_us();
+        if (now < next_frame_time) {
+            uint64_t wait_time = next_frame_time - now;
+            if (wait_time > 1000)
+                usleep((uint32_t)(wait_time - 500));
+            else if (wait_time > 100)
+                usleep(100);
+            while (get_time_us() < next_frame_time) { /* spin */ }
+        }
+
+        /* Advance deadline; if we're more than one frame late, reset (no catch-up) */
+        now = get_time_us();
+        if (now > next_frame_time + target_frame_us)
+            next_frame_time = now + target_frame_us;
+        else
+            next_frame_time += target_frame_us;
+
+        /* If the renderer hasn't consumed the last frame, count the drop */
+        if (g_frame_ready)
+            g_frames_skipped++;
+
+        if (machine_is_loaded()) {
+            g_emu_frame_active = 1;
+            machine_run_frame();
+            audio_update();
+            g_emu_frame_active = 0;
+            __sync_synchronize(); /* ARM DMB: stores visible before flag */
+            g_frame_ready = 1;
+            g_frames_produced++;
+        }
+    }
+    g_emu_frame_active = 0;
+    return NULL;
+}
+
+static void emu_thread_start(void)
+{
+    g_frame_ready = 0;
+    g_emu_thread_running = 1;
+    pthread_create(&g_emu_thread, NULL, emu_thread_func, NULL);
+    log_msg("Pre3: emulator thread started");
+}
+
+static void emu_thread_stop(void)
+{
+    g_emu_thread_running = 0;
+    pthread_join(g_emu_thread, NULL);
+    log_msg("Pre3: emulator thread stopped");
+}
+
+/* Block until the emulator thread finishes its current frame (max 50 ms).
+ * Call after setting g_emulator_paused=1, before touching machine state. */
+static void emu_thread_wait_idle(void)
+{
+    int i;
+    for (i = 0; i < 50 && g_emu_frame_active; i++)
+        usleep(1000);
+}
+
+/* --- ROM launch / return ------------------------------------------------- */
+
 /* Launch the selected ROM from file picker */
 static void launch_selected_rom(void)
 {
@@ -363,6 +470,11 @@ static void launch_selected_rom(void)
     /* Resume audio */
     audio_resume();
 
+    /* Pre3: start the emulator thread (SW path has no vsync for pacing) */
+    if (!device_has_gl()) {
+        emu_thread_start();
+    }
+
     g_emulator_paused = 0;
     g_app_state = APP_STATE_EMULATOR;
 }
@@ -371,6 +483,11 @@ static void launch_selected_rom(void)
 static void return_to_filepicker(void)
 {
     log_msg("Returning to file picker");
+
+    /* Stop emulator thread before touching machine state (Pre3 only) */
+    if (!device_has_gl() && g_emu_thread_running) {
+        emu_thread_stop();
+    }
 
     /* Pause audio */
     audio_pause();
@@ -486,6 +603,7 @@ static void main_loop(void)
                 log_msg("Save state requested");
                 g_emulator_paused = 1;
                 audio_pause();
+                if (!device_has_gl()) emu_thread_wait_idle();
                 if (savestate_save(g_current_rom_path) == 0) {
                     input_show_notification("Saved");
                     input_set_save_exists(1);
@@ -500,6 +618,7 @@ static void main_loop(void)
                     log_msg("Load state requested");
                     g_emulator_paused = 1;
                     audio_pause();
+                    if (!device_has_gl()) emu_thread_wait_idle();
                     if (savestate_load(g_current_rom_path) == 0) {
                         input_show_notification("Loaded");
                     }
@@ -521,8 +640,12 @@ static void main_loop(void)
              * cross-thread jitter between CPU/TIA and the audio ring buffer.
              */
             if (!g_emulator_paused && machine_is_loaded()) {
-                machine_run_frame();
-                audio_update();
+                if (device_has_gl()) {
+                    /* TouchPad: run inline, paced by SDL_GL_SwapBuffers vsync */
+                    machine_run_frame();
+                    audio_update();
+                }
+                /* Pre3: emulator thread handles machine_run_frame/audio_update */
             }
 
             if (device_has_gl()) {
@@ -569,22 +692,33 @@ static void main_loop(void)
                 if (machine_is_loaded()) {
                     int popup_vis = input_options_popup_visible() || input_confirm_visible() || input_autosave_warn_visible();
 
-                    if (!video_sw_is_fullscreen())
-                        sw_clear(0, 0, 0);
-                    video_render_frame_sw();
-                    input_draw_controls_sw();
-                    input_draw_popup_sw();
+                    if (g_frame_ready || popup_vis) {
+                        __sync_synchronize(); /* ARM DMB: see all emulator stores */
 
-                    if (g_touch_active > 0)
-                        usleep(1000);
+                        if (!video_sw_is_fullscreen())
+                            sw_clear(0, 0, 0);
+                        video_render_frame_sw();
+                        input_draw_controls_sw();
+                        input_draw_popup_sw();
 
-                    sw_flip();
+                        if (g_touch_active > 0)
+                            usleep(1000);
 
-                    input_tick();
-                    g_perf_frame_count++;
+                        sw_flip();
 
-                    if (popup_vis && g_emulator_paused)
-                        usleep(33000);
+                        input_tick();
+
+                        if (g_frame_ready) {
+                            g_frame_ready = 0;
+                            g_frames_rendered++;
+                        }
+                        g_perf_frame_count++;
+
+                        if (popup_vis && g_emulator_paused)
+                            usleep(33000);
+                    } else {
+                        usleep(500); /* nothing ready — yield briefly */
+                    }
                 }
             }
 
