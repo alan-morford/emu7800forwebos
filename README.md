@@ -1,5 +1,7 @@
 This 100% Claude Code vibe-coded project is a port of EMU7800 which, for the first time, brings Atari 7800 gaming to your HP TouchPad and HP Pre3. EMU7800 was developed by Atari enthusiast Mike Murphy. Originally released around 2003, the emulator is an open-source project (GNU GPLv2) designed for Windows and later adapted for other platforms, with active development continuing on GitHub. Portions of this port of EMU7800 also utilized open-source code from Stella version 7.0 (released in Oct 2024). Stella was originally developed for Linux by Bradford W. Mott and is now maintained and developed by Stephen Anthony and the Stella Team.
 
+NOTE: The Pre3 performance isn't great, however, it is drastically improved with Uberkernel and Govnah installed and configured to overclock the Pre3 to 1.9GHz. 
+
 Features:
 - Atari 2600 and 7800 ProSystem support
 - On-screen touch controls with multitouch D-pad and fire buttons
