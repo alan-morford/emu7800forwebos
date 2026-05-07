@@ -62,12 +62,20 @@ void machine_set_trigger(int player, int pressed);   /* Primary fire button */
 void machine_set_trigger2(int player, int pressed);  /* Secondary fire button (7800) */
 void machine_set_switch(int sw, int pressed);
 
+/* Paddle input (0=fully left, 255=fully right, 128=center) */
+void machine_set_paddle(int player, int value);
+int  machine_get_paddle(int player);
+int  machine_sample_paddle(int player);  /* frame-stable copy */
+
 /* Clear all input */
 void machine_clear_input(void);
 
 /* Controller type accessors (from A78 header) */
 int machine_get_left_controller(void);
 int machine_get_right_controller(void);
+
+/* Returns 1 if the loaded ROM uses paddle controllers */
+int machine_is_paddle_game(void);
 
 /* Supercharger support: distinct access tracking */
 uint32_t machine_get_distinct_accesses(void);

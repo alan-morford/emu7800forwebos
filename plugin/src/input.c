@@ -31,6 +31,7 @@
 /* Layout variables — initialized once by input_init_layout() */
 static int DPAD_X, DPAD_Y, DPAD_WIDTH, DPAD_HEIGHT;
 static int DPAD_CENTER_X, DPAD_CENTER_Y, DPAD_DEADZONE;
+static int SLIDER_X, SLIDER_Y, SLIDER_W, SLIDER_H, SLIDER_KNOB_R;
 static int FIRE_SIZE, FIRE_X, FIRE_Y;
 static int FIRE2_SIZE, FIRE2_X, FIRE2_Y;
 static int BTN_Y, BTN_HEIGHT, BTN_GAP;
@@ -71,7 +72,8 @@ typedef enum {
     TOUCH_OPTIONS,
     TOUCH_SAVE,
     TOUCH_LOAD,
-    TOUCH_ZOOM
+    TOUCH_ZOOM,
+    TOUCH_PADDLE_SLIDER
 } TouchTarget;
 
 typedef struct {
@@ -106,6 +108,7 @@ static int g_autosave_ask = 1;   /* 0=OFF, 1=ON */
 static int g_control_dim = 0;    /* 0=BRIGHT, 1=DIM, 2=DIMMER */
 static int g_btn_size = 1;   /* 0=Small, 1=Medium (default), 2=Large */
 static int g_dpad_size = 1;
+static int g_paddle_control_mode = 0;  /* 0=Slider (default), 1=DPad */
 
 /* Keyboard state */
 static int g_keyboard_active = 0;  /* Set to 1 on first key event, cleared on touch */
@@ -123,6 +126,9 @@ static int g_save_exists = 0;
 static int g_dpad_active = 0;
 static int g_dpad_touch_x = 0;
 static int g_dpad_touch_y = 0;
+
+/* Paddle slider tracking for visual feedback */
+static int g_paddle_slider_active = 0;
 
 /* Notification system */
 #define NOTIFY_FRAMES 120  /* ~2 seconds at 60fps */
@@ -197,15 +203,20 @@ static void update_dpad(int x, int y)
     g_dpad_touch_x = x;
     g_dpad_touch_y = y;
 
+    /* Calculate offset from center */
+    dx = x - DPAD_CENTER_X;
+    dy = y - DPAD_CENTER_Y;
+
+    /* In DPad paddle mode, just track touch position; input_tick() handles movement */
+    if (machine_is_paddle_game() && g_paddle_control_mode == 1) {
+        return;
+    }
+
     /* Clear all directions first */
     machine_set_joystick(0, 0, 0);  /* Up */
     machine_set_joystick(0, 1, 0);  /* Down */
     machine_set_joystick(0, 2, 0);  /* Left */
     machine_set_joystick(0, 3, 0);  /* Right */
-
-    /* Calculate offset from center */
-    dx = x - DPAD_CENTER_X;
-    dy = y - DPAD_CENTER_Y;
 
     /* Check deadzone */
     if (dx * dx + dy * dy < DPAD_DEADZONE * DPAD_DEADZONE) {
@@ -226,15 +237,29 @@ static void update_dpad(int x, int y)
     }
 }
 
+/* Update paddle position from horizontal touch coordinate */
+static void update_paddle_slider(int x)
+{
+    int inner_w = SLIDER_W - 2 * SLIDER_KNOB_R;
+    int px = x - SLIDER_X - SLIDER_KNOB_R;
+    int val;
+    if (px < 0) px = 0;
+    if (px > inner_w) px = inner_w;
+    val = (inner_w > 0) ? (px * 255 / inner_w) : 128;
+    machine_set_paddle(0, val);
+}
+
 /* Release the game input for a given target */
 static void release_target(TouchTarget target)
 {
     switch (target) {
         case TOUCH_DPAD:
-            machine_set_joystick(0, 0, 0);
-            machine_set_joystick(0, 1, 0);
-            machine_set_joystick(0, 2, 0);
-            machine_set_joystick(0, 3, 0);
+            if (!(machine_is_paddle_game() && g_paddle_control_mode == 1)) {
+                machine_set_joystick(0, 0, 0);
+                machine_set_joystick(0, 1, 0);
+                machine_set_joystick(0, 2, 0);
+                machine_set_joystick(0, 3, 0);
+            }
             g_dpad_active = 0;
             break;
         case TOUCH_FIRE:
@@ -248,6 +273,9 @@ static void release_target(TouchTarget target)
             break;
         case TOUCH_SELECT:
             machine_set_switch(1, 0);
+            break;
+        case TOUCH_PADDLE_SLIDER:
+            g_paddle_slider_active = 0;
             break;
         default:
             break;
@@ -278,12 +306,19 @@ static void apply_control_sizes(int sw)
     FIRE2_X   = FIRE_X - 20 - FIRE_SIZE;
     FIRE2_Y   = FIRE_Y;
 
-    /* Large buttons overlap OPTIONS: shrink label area */
-    if (g_btn_size == 2) {
+    /* Large buttons overlap OPTIONS only on 7800 (has two fire buttons) */
+    if (g_btn_size == 2 && machine_get_type() == MACHINE_7800) {
         OPTIONS_WIDTH = 76;
     } else {
         OPTIONS_WIDTH = BTN_BOT_WIDTH;
     }
+
+    /* Paddle slider: spans from left margin to right edge of ZOOM button */
+    SLIDER_X = 10;
+    SLIDER_KNOB_R = 30;
+    SLIDER_W = ZOOM_X + ZOOM_WIDTH - SLIDER_X;
+    SLIDER_Y = DPAD_CENTER_Y - 40;
+    SLIDER_H = 80;
 }
 
 /* Initialize layout variables based on device type */
@@ -362,6 +397,15 @@ static void input_init_layout(void)
     DPAD_CENTER_X = DPAD_X + DPAD_WIDTH / 2;
     DPAD_CENTER_Y = DPAD_Y + DPAD_HEIGHT / 2;
 
+    /* Pre3 paddle slider (TouchPad slider is set in apply_control_sizes) */
+    if (device_is_small()) {
+        SLIDER_X = 10;
+        SLIDER_KNOB_R = 24;
+        SLIDER_W = FIRE_X - 20 - SLIDER_X;
+        SLIDER_Y = DPAD_CENTER_Y - 30;
+        SLIDER_H = 60;
+    }
+
     if (device_is_small()) {
         /* Pre3: smaller Save/Load/Zoom, larger Options */
         int sml = 80;   /* Save, Load, Zoom width */
@@ -385,6 +429,11 @@ static void input_init_layout(void)
         SAVE_Y = BTN_BOT_Y;  SAVE_WIDTH = BTN_BOT_WIDTH;  SAVE_HEIGHT = BTN_BOT_HEIGHT;
         OPTIONS_X = ZOOM_X + ZOOM_WIDTH + BTN_BOT_GAP;
         OPTIONS_Y = BTN_BOT_Y;  OPTIONS_WIDTH = BTN_BOT_WIDTH;  OPTIONS_HEIGHT = BTN_BOT_HEIGHT;
+    }
+
+    /* Add Paddle Controls row for paddle games */
+    if (machine_is_paddle_game()) {
+        IGPOPUP_ROWS += 1;
     }
 
     IGPOPUP_H = IGPOPUP_PAD + IGPOPUP_TITLE_H + IGPOPUP_PAD
@@ -461,7 +510,11 @@ void input_handle_touch_down(int finger_id, int x, int y)
         target = TOUCH_ZOOM;
     } else if (point_in_rect(x, y, OPTIONS_X, OPTIONS_Y, OPTIONS_WIDTH, OPTIONS_HEIGHT)) {
         target = TOUCH_OPTIONS;
-    } else if (point_in_rect(x, y, DPAD_X, DPAD_Y, DPAD_WIDTH, DPAD_HEIGHT)) {
+    } else if (machine_is_paddle_game() && g_paddle_control_mode == 0 &&
+               point_in_rect(x, y, SLIDER_X, SLIDER_Y, SLIDER_W, SLIDER_H)) {
+        target = TOUCH_PADDLE_SLIDER;
+    } else if (!(machine_is_paddle_game() && g_paddle_control_mode == 0) &&
+               point_in_rect(x, y, DPAD_X, DPAD_Y, DPAD_WIDTH, DPAD_HEIGHT)) {
         target = TOUCH_DPAD;
     } else if (point_in_circle(x, y, FIRE_X + FIRE_SIZE/2, FIRE_Y + FIRE_SIZE/2, FIRE_SIZE/2)) {
         target = TOUCH_FIRE;
@@ -487,6 +540,10 @@ void input_handle_touch_down(int finger_id, int x, int y)
 
     /* Activate the corresponding game input */
     switch (target) {
+        case TOUCH_PADDLE_SLIDER:
+            g_paddle_slider_active = 1;
+            update_paddle_slider(x);
+            break;
         case TOUCH_DPAD:
             update_dpad(x, y);
             break;
@@ -562,6 +619,8 @@ void input_handle_touch_move(int finger_id, int x, int y)
             machine_set_joystick(0, 2, 0);
             machine_set_joystick(0, 3, 0);
         }
+    } else if (g_touches[slot].target == TOUCH_PADDLE_SLIDER) {
+        update_paddle_slider(x);
     }
 }
 
@@ -621,21 +680,40 @@ void input_draw_controls_gl(void)
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDisable(GL_TEXTURE_2D);
 
-    /* Draw D-pad finger tracker (orange circle follows touch position) */
-    if (g_dpad_active) {
-        draw_circle_gl(g_dpad_touch_x, g_dpad_touch_y, DPAD_DEADZONE,
-                       1.0f, 0.5f, 0.15f, 0.5f * dim);
-    }
+    /* Paddle slider or D-pad */
+    if (machine_is_paddle_game() && g_paddle_control_mode == 0) {
+        int inner_w = SLIDER_W - 2 * SLIDER_KNOB_R;
+        int knob_x = SLIDER_X + SLIDER_KNOB_R + (machine_get_paddle(0) * inner_w) / 255;
+        int knob_y = SLIDER_Y + SLIDER_H / 2;
+        float knob_a = g_paddle_slider_active ? 0.8f : 0.6f;
+        {
+            float cap_r = SLIDER_H / 2.0f;
+            float lx = SLIDER_X + cap_r;
+            float rx = SLIDER_X + SLIDER_W - cap_r;
+            float cy = SLIDER_Y + SLIDER_H / 2.0f;
+            float sa = 0.4f * dim;
+            draw_rect_gl(lx, SLIDER_Y, rx - lx, SLIDER_H, 0.3f, 0.3f, 0.3f, sa);
+            draw_circle_gl(lx, cy, cap_r, 0.3f, 0.3f, 0.3f, sa);
+            draw_circle_gl(rx, cy, cap_r, 0.3f, 0.3f, 0.3f, sa);
+        }
+        draw_circle_gl(knob_x, knob_y, SLIDER_KNOB_R, 1.0f, 0.5f, 0.15f, knob_a * dim);
+    } else {
+        /* Draw D-pad finger tracker (orange circle follows touch position) */
+        if (g_dpad_active) {
+            draw_circle_gl(g_dpad_touch_x, g_dpad_touch_y, DPAD_DEADZONE,
+                           1.0f, 0.5f, 0.15f, 0.5f * dim);
+        }
 
-    /* Draw D-pad background (semi-transparent white circle) */
-    {
-        int drad = DPAD_WIDTH * 2 / 5;   /* 80 at medium (200), scales with size */
-        int carm = DPAD_WIDTH * 3 / 10;  /* 60 at medium, cross arm length */
-        draw_circle_gl(DPAD_CENTER_X, DPAD_CENTER_Y, drad, 1.0f, 1.0f, 1.0f, 0.25f * dim);
+        /* Draw D-pad background (semi-transparent white circle) */
+        {
+            int drad = DPAD_WIDTH * 2 / 5;   /* 80 at medium (200), scales with size */
+            int carm = DPAD_WIDTH * 3 / 10;  /* 60 at medium, cross arm length */
+            draw_circle_gl(DPAD_CENTER_X, DPAD_CENTER_Y, drad, 1.0f, 1.0f, 1.0f, 0.25f * dim);
 
-        /* Draw cross lines in D-pad (orange) */
-        draw_rect_gl(DPAD_CENTER_X - 5, DPAD_CENTER_Y - carm, 10, carm * 2, 1.0f, 0.5f, 0.15f, 0.25f * dim);
-        draw_rect_gl(DPAD_CENTER_X - carm, DPAD_CENTER_Y - 5, carm * 2, 10, 1.0f, 0.5f, 0.15f, 0.25f * dim);
+            /* Draw cross lines in D-pad (orange) */
+            draw_rect_gl(DPAD_CENTER_X - 5, DPAD_CENTER_Y - carm, 10, carm * 2, 1.0f, 0.5f, 0.15f, 0.25f * dim);
+            draw_rect_gl(DPAD_CENTER_X - carm, DPAD_CENTER_Y - 5, carm * 2, 10, 1.0f, 0.5f, 0.15f, 0.25f * dim);
+        }
     }
 
     /* Draw Fire button (orange) */
@@ -724,7 +802,7 @@ void input_draw_controls_gl(void)
     /* OPTIONS */
     draw_rect_gl(OPTIONS_X, OPTIONS_Y, OPTIONS_WIDTH, OPTIONS_HEIGHT, 0.3f, 0.3f, 0.3f, 0.4f * dim);
     {
-        const char *opt_label = (g_btn_size == 2) ? "OPT" : "OPTIONS";
+        const char *opt_label = (g_btn_size == 2 && machine_get_type() == MACHINE_7800) ? "OPT" : "OPTIONS";
         int ow = font_string_width(opt_label, 2);
         font_draw_string(opt_label, OPTIONS_X + (OPTIONS_WIDTH - ow) / 2, OPTIONS_Y + 12, 2,
                          1.0f, 0.5f, 0.15f, 0.5f * dim);
@@ -741,7 +819,8 @@ void input_draw_controls_gl(void)
 
     /* Keyboard key labels (shown when keyboard is active) */
     if (g_keyboard_active) {
-        /* D-pad labels: W/A/S/D (black) */
+        /* D-pad labels: W/A/S/D (only in d-pad mode) */
+        if (!(machine_is_paddle_game() && g_paddle_control_mode == 0)) {
         font_draw_string("W", DPAD_CENTER_X - 8, DPAD_CENTER_Y - 50, 2,
                          0.0f, 0.0f, 0.0f, 0.8f);
         font_draw_string("S", DPAD_CENTER_X - 8, DPAD_CENTER_Y + 30, 2,
@@ -750,6 +829,7 @@ void input_draw_controls_gl(void)
                          0.0f, 0.0f, 0.0f, 0.8f);
         font_draw_string("D", DPAD_CENTER_X + 40, DPAD_CENTER_Y - 8, 2,
                          0.0f, 0.0f, 0.0f, 0.8f);
+        }
 
         /* Fire button labels (black) */
         if (machine_get_type() == MACHINE_7800) {
@@ -806,21 +886,40 @@ void input_draw_controls_sw(void)
     float dim = get_dim_multiplier();
     uint8_t da = f2b(0.25f * dim);  /* dpad bg alpha */
 
-    /* D-pad finger tracker (orange circle follows touch) */
-    if (g_dpad_active) {
-        sw_fill_circle_a(g_dpad_touch_x, g_dpad_touch_y, DPAD_DEADZONE,
-                         255, 128, 38, f2b(0.5f * dim));
-    }
+    /* Paddle slider or D-pad */
+    if (machine_is_paddle_game() && g_paddle_control_mode == 0) {
+        int inner_w = SLIDER_W - 2 * SLIDER_KNOB_R;
+        int knob_x = SLIDER_X + SLIDER_KNOB_R + (machine_get_paddle(0) * inner_w) / 255;
+        int knob_y = SLIDER_Y + SLIDER_H / 2;
+        uint8_t knob_a = f2b((g_paddle_slider_active ? 0.8f : 0.6f) * dim);
+        {
+            int cap_r = SLIDER_H / 2;
+            int lx = SLIDER_X + cap_r;
+            int rx = SLIDER_X + SLIDER_W - cap_r;
+            int cy = SLIDER_Y + SLIDER_H / 2;
+            uint8_t sa = f2b(0.4f * dim);
+            sw_fill_rect_a(lx, SLIDER_Y, rx - lx, SLIDER_H, 77, 77, 77, sa);
+            sw_fill_circle_a(lx, cy, cap_r, 77, 77, 77, sa);
+            sw_fill_circle_a(rx, cy, cap_r, 77, 77, 77, sa);
+        }
+        sw_fill_circle_a(knob_x, knob_y, SLIDER_KNOB_R, 255, 128, 38, knob_a);
+    } else {
+        /* D-pad finger tracker (orange circle follows touch) */
+        if (g_dpad_active) {
+            sw_fill_circle_a(g_dpad_touch_x, g_dpad_touch_y, DPAD_DEADZONE,
+                             255, 128, 38, f2b(0.5f * dim));
+        }
 
-    /* D-pad background (semi-transparent white circle) */
-    sw_fill_circle_a(DPAD_CENTER_X, DPAD_CENTER_Y, DPAD_WIDTH / 2, 255, 255, 255, da);
+        /* D-pad background (semi-transparent white circle) */
+        sw_fill_circle_a(DPAD_CENTER_X, DPAD_CENTER_Y, DPAD_WIDTH / 2, 255, 255, 255, da);
 
-    /* Cross lines in D-pad (orange) */
-    {
-        int cr = DPAD_WIDTH * 3 / 8;  /* cross half-length (72 for 192px dpad) */
-        int cw = DPAD_WIDTH / 32 + 1; /* cross half-width (7 for 192px dpad) */
-        sw_fill_rect_a(DPAD_CENTER_X - cw, DPAD_CENTER_Y - cr, cw * 2, cr * 2, 255, 128, 38, da);
-        sw_fill_rect_a(DPAD_CENTER_X - cr, DPAD_CENTER_Y - cw, cr * 2, cw * 2, 255, 128, 38, da);
+        /* Cross lines in D-pad (orange) */
+        {
+            int cr = DPAD_WIDTH * 3 / 8;  /* cross half-length (72 for 192px dpad) */
+            int cw = DPAD_WIDTH / 32 + 1; /* cross half-width (7 for 192px dpad) */
+            sw_fill_rect_a(DPAD_CENTER_X - cw, DPAD_CENTER_Y - cr, cw * 2, cr * 2, 255, 128, 38, da);
+            sw_fill_rect_a(DPAD_CENTER_X - cr, DPAD_CENTER_Y - cw, cr * 2, cw * 2, 255, 128, 38, da);
+        }
     }
 
     /* Fire button (orange) */
@@ -952,19 +1051,25 @@ void input_draw_popup_sw(void)
                 case 2: row_label = "Control Brightness";
                     switch (g_control_dim) { case 1: label = "DIM"; break; case 2: label = "DIMMER"; break; default: label = "BRIGHT"; break; }
                     break;
-                case 3: row_label = "Scanlines"; label = video_get_scanlines_label(); break;
-                case 4: row_label = "Palette (7800)"; label = video_get_palette_label(); break;
-                case 5: row_label = "Bug Report"; label = "EMAIL"; break;
+                case 3: row_label = "Paddle Controls";
+                    label = g_paddle_control_mode == 0 ? "SLIDER" : "DPAD";
+                    if (!machine_is_paddle_game()) { lbl_r = 102; lbl_g = 102; lbl_b = 102; label_alpha = 128; }
+                    break;
+                case 4: row_label = "Scanlines"; label = video_get_scanlines_label(); break;
+                case 5: row_label = "Palette (7800)"; label = video_get_palette_label(); break;
+                case 6: row_label = "Bug Report"; label = "EMAIL"; break;
             }
 
             /* Row label */
             if (row_label) {
-                uint8_t la = (row == 1 && !g_autosave) ? 102 : 230;
+                uint8_t la = ((row == 1 && !g_autosave) ||
+                              (row == 3 && !machine_is_paddle_game())) ? 102 : 230;
                 sw_draw_string_a(row_x, row_y + (IGPOPUP_ROW_H - 16) / 2, row_label, 2, 230, 230, 230, la);
             }
 
             /* Button background */
-            if (row == 1 && !g_autosave) {
+            if ((row == 1 && !g_autosave) ||
+                (row == 3 && !machine_is_paddle_game())) {
                 sw_fill_rect_a(btn_x, btn_y, IGPOPUP_BTN_W, IGPOPUP_BTN_H, 51, 51, 51, 77);
             } else {
                 sw_fill_rect_a(btn_x, btn_y, IGPOPUP_BTN_W, IGPOPUP_BTN_H, 77, 77, 77, 153);
@@ -1299,6 +1404,18 @@ void input_tick(void)
     if (g_notify_timer > 0) {
         g_notify_timer--;
     }
+
+    /* D-pad paddle mode: move paddle incrementally while finger is held */
+    if (g_dpad_active && machine_is_paddle_game() && g_paddle_control_mode == 1) {
+        int dx = g_dpad_touch_x - DPAD_CENTER_X;
+        if (dx < -DPAD_DEADZONE) {
+            int v = machine_get_paddle(0) - 8;
+            machine_set_paddle(0, v < 0 ? 0 : v);
+        } else if (dx > DPAD_DEADZONE) {
+            int v = machine_get_paddle(0) + 8;
+            machine_set_paddle(0, v > 255 ? 255 : v);
+        }
+    }
 }
 
 /* ---- OPTIONS popup / confirm dialog ---- */
@@ -1356,6 +1473,8 @@ int  input_get_btn_size(void)  { return g_btn_size; }
 void input_set_btn_size(int v) { g_btn_size = (v >= 0 && v <= 2) ? v : 1; }
 int  input_get_dpad_size(void)  { return g_dpad_size; }
 void input_set_dpad_size(int v) { g_dpad_size = (v >= 0 && v <= 2) ? v : 1; }
+int  input_get_paddle_control_mode(void)  { return g_paddle_control_mode; }
+void input_set_paddle_control_mode(int v) { g_paddle_control_mode = (v == 1) ? 1 : 0; }
 
 int input_autosave_warn_visible(void) { return g_autosave_warn_visible; }
 int input_autosave_warn_result(void)  { return g_autosave_warn_result; }
@@ -1431,16 +1550,26 @@ void input_draw_popup_gl(void)
                 case 4:
                     row_label = "DPad Size";
                     label = g_dpad_size == 0 ? "SMALL" : g_dpad_size == 1 ? "MEDIUM" : "LARGE";
+                    if (machine_is_paddle_game() && g_paddle_control_mode == 0) {
+                        lbl_r = 0.4f; lbl_g = 0.4f; lbl_b = 0.4f; lbl_a = 0.5f;
+                    }
                     break;
                 case 5:
+                    row_label = "Paddle Controls";
+                    label = g_paddle_control_mode == 0 ? "SLIDER" : "DPAD";
+                    if (!machine_is_paddle_game()) {
+                        lbl_r = 0.4f; lbl_g = 0.4f; lbl_b = 0.4f; lbl_a = 0.5f;
+                    }
+                    break;
+                case 6:
                     row_label = "Scanlines";
                     label = video_get_scanlines_label();
                     break;
-                case 6:
+                case 7:
                     row_label = "Palette (7800)";
                     label = video_get_palette_label();
                     break;
-                case 7:
+                case 8:
                     row_label = "Bug Report";
                     label = "EMAIL";
                     break;
@@ -1448,14 +1577,18 @@ void input_draw_popup_gl(void)
 
             /* Row label (white text, vertically centered) */
             if (row_label) {
-                int row_dim = (row == 1 && !g_autosave);
+                int row_dim = (row == 1 && !g_autosave) ||
+                              (row == 4 && machine_is_paddle_game() && g_paddle_control_mode == 0) ||
+                              (row == 5 && !machine_is_paddle_game());
                 font_draw_string(row_label, row_x,
                                  row_y + (IGPOPUP_ROW_H - 16) / 2, 2,
                                  0.9f, 0.9f, 0.9f, row_dim ? 0.4f : 0.9f);
             }
 
             /* Button background */
-            if (row == 1 && !g_autosave) {
+            if ((row == 1 && !g_autosave) ||
+                (row == 4 && machine_is_paddle_game() && g_paddle_control_mode == 0) ||
+                (row == 5 && !machine_is_paddle_game())) {
                 draw_rect_gl(btn_x, btn_y, IGPOPUP_BTN_W, IGPOPUP_BTN_H,
                              0.2f, 0.2f, 0.2f, 0.3f);
             } else {
@@ -1689,18 +1822,26 @@ static void input_popup_handle_touch(int x, int y)
                     apply_control_sizes(device_screen_width());
                     filepicker_save_settings();
                     break;
-                case 4: /* DPad Size cycle */
-                    g_dpad_size = (g_dpad_size + 1) % 3;
-                    apply_control_sizes(device_screen_width());
-                    filepicker_save_settings();
+                case 4: /* DPad Size cycle — disabled in paddle+slider mode */
+                    if (!(machine_is_paddle_game() && g_paddle_control_mode == 0)) {
+                        g_dpad_size = (g_dpad_size + 1) % 3;
+                        apply_control_sizes(device_screen_width());
+                        filepicker_save_settings();
+                    }
                     break;
-                case 5: /* Scanlines cycle: off->light->medium->dark->off */
+                case 5: /* Paddle Controls toggle — only active for paddle games */
+                    if (machine_is_paddle_game()) {
+                        g_paddle_control_mode = !g_paddle_control_mode;
+                        filepicker_save_settings();
+                    }
+                    break;
+                case 6: /* Scanlines cycle: off->light->medium->dark->off */
                     video_cycle_scanlines();
                     break;
-                case 6: /* Palette cycle */
+                case 7: /* Palette cycle */
                     video_set_maria_palette((video_get_maria_palette() + 1) % 3);
                     break;
-                case 7: /* Bug Report email */
+                case 8: /* Bug Report email */
                     g_options_popup_visible = 0;
                     filepicker_save_settings();
                     {

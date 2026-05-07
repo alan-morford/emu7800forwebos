@@ -193,6 +193,8 @@ static uint8_t *g_display_buffer = g_frame_buffers[1];
 /* Sampled input state — captured once at frame start */
 static int g_frame_trigger[2];
 static int g_inpt4_log_count = 0;
+static int g_inpt0_log_count = 0;
+static int g_dump_log_count = 0;
 
 /* Frame start TIA clock — for mid-frame audio position */
 static uint64_t g_frame_start_tia_clock = 0;
@@ -694,6 +696,13 @@ static void op_vblank(TIA *tia, uint8_t data, uint64_t cpu_clock)
         if ((data & 0x80) == 0) {
             tia->dump_enabled = 0;
             tia->dump_disabled_cycle = cpu_clock;
+            if (g_dump_log_count < 6) {
+                char msg[80];
+                snprintf(msg, sizeof(msg), "DUMP_RELEASE: cpu=%llu sl=%d",
+                         (unsigned long long)cpu_clock, tia->scanline);
+                log_msg(msg);
+                g_dump_log_count++;
+            }
         }
     }
 
@@ -1113,18 +1122,34 @@ uint8_t tia_read(TIA *tia, uint16_t addr, uint64_t cpu_clock, uint8_t data_bus_s
         case INPT0:
         case INPT1:
         case INPT2:
-        case INPT3:
+        case INPT3: {
+            /* INPT0/INPT2 → paddle player 0, INPT1/INPT3 → paddle player 1 */
+            int pidx = (addr == INPT1 || addr == INPT3) ? 1 : 0;
             if (tia->dump_enabled) {
                 retval = 0x00;
             } else {
+                int threshold = ((255 - machine_sample_paddle(pidx)) * 16384) / 255;
                 if (tia->dump_disabled_cycle == 0 ||
-                    (cpu_clock - tia->dump_disabled_cycle) > 380) {
+                    (cpu_clock - tia->dump_disabled_cycle) > (uint64_t)threshold) {
                     retval = 0x80;
                 } else {
                     retval = 0x00;
                 }
             }
+            if (g_inpt0_log_count < 30 && addr == INPT0) {
+                char msg[96];
+                snprintf(msg, sizeof(msg),
+                         "INPT0: ret=$%02X dump=%d ddc=%llu elapsed=%llu thr=%d pval=%d",
+                         retval, tia->dump_enabled,
+                         (unsigned long long)tia->dump_disabled_cycle,
+                         tia->dump_disabled_cycle ? (unsigned long long)(cpu_clock - tia->dump_disabled_cycle) : 0,
+                         ((255 - machine_sample_paddle(0)) * 16384) / 255,
+                         machine_sample_paddle(0));
+                log_msg(msg);
+                g_inpt0_log_count++;
+            }
             break;
+        }
         case INPT4:
             retval = g_frame_trigger[0] ? 0x00 : 0x80;
             if (g_inpt4_log_count < 20) {
@@ -1246,6 +1271,9 @@ void tia_reset(TIA *tia)
     tia->dump_disabled_cycle = 0;
 
     tia->collisions = 0;
+
+    g_inpt0_log_count = 0;
+    g_dump_log_count = 0;
 
     tiasound_reset();
 }

@@ -178,11 +178,11 @@ static void video_update_vertices(void)
     int sh = device_screen_height();
 
     if (device_is_small()) {
-        /* Pre3 (800x480): 3X same as 2X, FULL stretches to fill */
+        /* Pre3 (800x480): ORIGINAL=640x480, FULL=800x480 */
         switch (g_zoom_level) {
             case ZOOM_1X:   w = 320; h = 240; break;
             case ZOOM_FULL: w = sw;  h = sh;  break;
-            default:        w = 640; h = 480; break; /* ZOOM_2X and ZOOM_3X */
+            default:        w = 640; h = 480; break; /* ZOOM_2X */
         }
     } else {
         /* TouchPad (1024x768) */
@@ -530,9 +530,10 @@ const char *video_get_scanlines_label(void)
 void video_cycle_zoom(void)
 {
     if (device_is_small()) {
-        /* Pre3: toggle between max-height and fullscreen */
+        /* Pre3: toggle ORIGINAL ↔ FULLSCREEN */
         g_zoom_level = (g_zoom_level == ZOOM_FULL) ? ZOOM_2X : ZOOM_FULL;
     } else {
+        /* TouchPad: 1X → 2X → 3X → FULL → 1X */
         g_zoom_level = (g_zoom_level + 1) % ZOOM_COUNT;
     }
     video_update_vertices();
@@ -568,14 +569,8 @@ static void video_update_sw_rect(void)
     if (g_zoom_level == ZOOM_FULL) {
         w = scr_w; h = scr_h;
     } else {
-        /* Max height: scale to fill vertical, maintain aspect ratio */
-        if (machine_get_type() == MACHINE_7800) {
-            w = 640; h = 480;
-        } else {
-            int active = tia_get_active_height();
-            if (active < 1) active = 192;
-            w = 480; h = active * 3;
-        }
+        /* ORIGINAL: 4:3 TV-accurate display for both modes */
+        w = 640; h = 480;
     }
 
     /* Clamp to screen */

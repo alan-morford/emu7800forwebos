@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include "machine.h"
 #include "zip_load.h"
 #include "m6502.h"
@@ -98,12 +99,14 @@ static volatile uint8_t g_joystick[2];  /* Bit 0=up, 1=down, 2=left, 3=right */
 static volatile uint8_t g_trigger[2];   /* Primary fire button */
 static volatile uint8_t g_trigger2[2];  /* Secondary fire button (7800) */
 static volatile uint8_t g_switches;     /* Bit 0=reset, 1=select, 2=ldiff, 3=rdiff */
+static volatile int g_paddle[2];        /* 0=left, 128=center, 255=right */
 
 /* Frame-sampled copies — stable for the duration of one frame */
 static uint8_t g_frame_joystick[2];
 static uint8_t g_frame_trigger_m[2];   /* _m suffix to avoid clash with tia.c g_frame_trigger */
 static uint8_t g_frame_trigger2_m[2];
 static uint8_t g_frame_switches;
+static int g_frame_paddle[2];
 
 /* Forward declarations */
 static uint8_t mem_read_2600(uint16_t addr);
@@ -424,6 +427,10 @@ void machine_init(void)
     g_trigger2[0] = 0;
     g_trigger2[1] = 0;
     g_switches = 0;
+    g_paddle[0] = 128;
+    g_paddle[1] = 128;
+    g_frame_paddle[0] = 128;
+    g_frame_paddle[1] = 128;
 
     m6502_init(&g_cpu, 1);
     tia_init(&g_tia);
@@ -447,6 +454,53 @@ void machine_shutdown(void)
 {
     cart_free(&g_cart);
     g_rom_loaded = 0;
+}
+
+/* Case-insensitive substring search in filename for paddle game detection */
+static int fname_contains(const char *path, const char *needle) {
+    const char *fname = strrchr(path, '/');
+    const char *s;
+    const char *n;
+    fname = fname ? fname + 1 : path;
+    for (s = fname; *s; s++) {
+        for (n = needle; *n; n++) {
+            if (tolower((unsigned char)s[n - needle]) != *n) break;
+        }
+        if (!*n) return 1;
+    }
+    return 0;
+}
+
+static void detect_2600_paddle(const char *path) {
+    static const char *kw[] = {
+        "kaboom", "breakout",
+        "warlords",
+        "nightdriv", "night_driv", "night driv",
+        "demons", "canyon bomb", "canyonbomb",
+        "circus",
+        "streetrace", "street_race", "street race",
+        "stuntcycle", "stunt_cycle", "stunt cycle",
+        "steeplechase",
+        "partymix", "party_mix", "party mix",
+        "tacscan", "tac_scan", "tac-scan", "tac scan",
+        "astroblast", "eggomania",
+        "beat em", "beatem", "beat_em",
+        "bachelor",
+        "pokerplus", "poker_plus", "poker plus",
+        "solarstorm", "solar_storm", "solar storm",
+        "bumperbash", "bumper_bash", "bumper bash",
+        "pieceocake", "piece o",
+        "casino", "blackjack",
+        "warplock", "guardian",
+        NULL
+    };
+    int i;
+    for (i = 0; kw[i]; i++) {
+        if (fname_contains(path, kw[i])) {
+            g_cart.left_controller = CTRL_PADDLE;
+            return;
+        }
+    }
 }
 
 /* Load a ROM file */
@@ -503,6 +557,11 @@ int machine_load_rom(const char *path, int machine_type)
     }
 
     free(data);
+
+    /* For 2600 ROMs without headers, detect paddle games from filename */
+    if (machine_type == MACHINE_2600 && !machine_is_paddle_game()) {
+        detect_2600_paddle(path);
+    }
 
     /* Reset everything */
     machine_reset();
@@ -814,6 +873,8 @@ void machine_sample_input(void)
     g_frame_trigger_m[1] = g_trigger[1];
     g_frame_trigger2_m[0] = g_trigger2[0];
     g_frame_trigger2_m[1] = g_trigger2[1];
+    g_frame_paddle[0] = g_paddle[0];
+    g_frame_paddle[1] = g_paddle[1];
     g_frame_switches = g_switches;
 }
 
@@ -890,6 +951,34 @@ void machine_clear_input(void)
     g_trigger2[0] = 0;
     g_trigger2[1] = 0;
     g_switches = 0;
+    g_paddle[0] = 128;
+    g_paddle[1] = 128;
+}
+
+void machine_set_paddle(int player, int value)
+{
+    if (player < 0 || player > 1) return;
+    if (value < 0) value = 0;
+    if (value > 255) value = 255;
+    g_paddle[player] = value;
+}
+
+int machine_get_paddle(int player)
+{
+    if (player < 0 || player > 1) return 128;
+    return g_paddle[player];
+}
+
+int machine_sample_paddle(int player)
+{
+    if (player < 0 || player > 1) return 128;
+    return g_frame_paddle[player];
+}
+
+int machine_is_paddle_game(void)
+{
+    return g_cart.left_controller == CTRL_PADDLE
+        || g_cart.right_controller == CTRL_PADDLE;
 }
 
 /* Supercharger support: get distinct access count */

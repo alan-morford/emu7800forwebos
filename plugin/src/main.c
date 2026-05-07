@@ -124,7 +124,7 @@ int main(int argc, char *argv[])
     (void)argc;
     (void)argv;
 
-    log_msg("EMU7800 starting... [build: emu7800-v1.8.1]");
+    log_msg("EMU7800 starting... [build: emu7800-v1.8.2]");
 
     /* Detect device and initialize PDL (all PDL calls via dlsym in device.c) */
     device_init();

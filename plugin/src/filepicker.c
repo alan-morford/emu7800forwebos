@@ -411,6 +411,8 @@ static void load_settings(void)
             input_set_btn_size(atoi(line + 9));
         } else if (strncmp(line, "dpad_size=", 10) == 0) {
             input_set_dpad_size(atoi(line + 10));
+        } else if (strncmp(line, "paddle_mode=", 12) == 0) {
+            input_set_paddle_control_mode(atoi(line + 12));
         }
     }
     fclose(f);
@@ -434,6 +436,7 @@ static void save_settings(void)
     fprintf(f, "control_dim=%d\n", input_get_control_dim());
     fprintf(f, "btn_size=%d\n", input_get_btn_size());
     fprintf(f, "dpad_size=%d\n", input_get_dpad_size());
+    fprintf(f, "paddle_mode=%d\n", input_get_paddle_control_mode());
     fclose(f);
 }
 
@@ -2916,10 +2919,10 @@ void filepicker_draw(void)
         }
     }
 
-    /* "RECENT" button below Resume */
+    /* "RECENT" button below Resume (or at Resume position when no last ROM) */
     if (g_recent_count > 1) {
         int btn_w = font_string_width("RECENT", 2) + 16;
-        int btn_y = RESUME_Y + RESUME_H + 4;
+        int btn_y = g_has_last_rom ? RESUME_Y + RESUME_H + 4 : RESUME_Y;
         glDisable(GL_TEXTURE_2D);
         draw_rect(RESUME_X, btn_y, btn_w, RESUME_H,
                   0.3f, 0.3f, 0.3f, 0.6f);
@@ -2937,7 +2940,7 @@ void filepicker_draw(void)
         int gear_bottom = TITLE_Y + TITLE_SCALE * 8 + 2 + GEAR_IMG_H;  /* gear icon bottom */
         int sep_y = gear_bottom + 2;
         if (g_recent_count > 1) {
-            int recent_bottom = RESUME_Y + RESUME_H + 4 + RESUME_H;
+            int recent_bottom = (g_has_last_rom ? RESUME_Y + RESUME_H + 4 : RESUME_Y) + RESUME_H;
             if (recent_bottom + 6 > sep_y) sep_y = recent_bottom + 6;
         }
         glDisable(GL_TEXTURE_2D);

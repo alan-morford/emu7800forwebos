@@ -546,10 +546,12 @@ int cart_load(Cart *cart, const uint8_t *data, int size, int machine_type)
         {
             uint8_t lc = data[0x37];
             uint8_t rc = data[0x38];
-            cart->left_controller = (lc == 2) ? CTRL_LIGHTGUN :
+            cart->left_controller = (lc == 3) ? CTRL_PADDLE :
+                                    (lc == 2) ? CTRL_LIGHTGUN :
                                     (lc == 1) ? CTRL_PROLINE_JOYSTICK :
                                     (lc == 0) ? CTRL_NONE : CTRL_PROLINE_JOYSTICK;
-            cart->right_controller = (rc == 2) ? CTRL_LIGHTGUN :
+            cart->right_controller = (rc == 3) ? CTRL_PADDLE :
+                                     (rc == 2) ? CTRL_LIGHTGUN :
                                      (rc == 1) ? CTRL_PROLINE_JOYSTICK :
                                      (rc == 0) ? CTRL_NONE : CTRL_PROLINE_JOYSTICK;
             snprintf(msg, sizeof(msg), "cart_load: A78 controllers left=%d (0x%02X) right=%d (0x%02X)",

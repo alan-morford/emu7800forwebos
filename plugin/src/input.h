@@ -99,4 +99,8 @@ void input_set_btn_size(int v);
 int  input_get_dpad_size(void);
 void input_set_dpad_size(int v);
 
+/* Paddle control mode: 0=Slider (default), 1=DPad */
+int  input_get_paddle_control_mode(void);
+void input_set_paddle_control_mode(int v);
+
 #endif /* INPUT_H */
