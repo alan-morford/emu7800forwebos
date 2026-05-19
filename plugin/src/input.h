@@ -68,6 +68,7 @@ void input_set_save_exists(int exists);
 
 /* Show a notification message at the top of the screen (auto-fades after ~2 seconds) */
 void input_show_notification(const char *text);
+void input_show_notification_orange(const char *text);
 
 /* Tick notification timer (call once per frame) */
 void input_tick(void);

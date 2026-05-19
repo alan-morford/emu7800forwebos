@@ -28,6 +28,9 @@
 #define M_PI 3.14159265358979323846
 #endif
 
+/* Access current ROM path from main.c for shortcut creation */
+extern const char *main_get_current_rom_path(void);
+
 /* Layout variables — initialized once by input_init_layout() */
 static int DPAD_X, DPAD_Y, DPAD_WIDTH, DPAD_HEIGHT;
 static int DPAD_CENTER_X, DPAD_CENTER_Y, DPAD_DEADZONE;
@@ -101,6 +104,9 @@ static int g_confirm_result = -1;  /* -1=pending, 0=No, 1=Yes */
 static int g_autosave_warn_visible = 0;
 static int g_autosave_warn_result = -1;  /* -1=pending, 0=No, 1=Yes */
 static int g_autosave_warn_action = 0;   /* 0=enabling autosave, 1=disabling ask */
+
+/* Notification color override: 1 = orange (used by shortcut notification) */
+static int g_notify_orange = 0;
 
 /* Settings state (loaded from file at startup, persisted on change) */
 static int g_autosave = 0;       /* 0=OFF, 1=ON */
@@ -353,7 +359,7 @@ static void input_init_layout(void)
         IGPOPUP_W = 600;  IGPOPUP_PAD = 16;
         IGPOPUP_TITLE_H = 28;  IGPOPUP_ROW_H = 42;
         IGPOPUP_BTN_W = 112;  IGPOPUP_BTN_H = 40;
-        IGPOPUP_ROWS = 6;
+        IGPOPUP_ROWS = 8;
 
         CONFIRM_W = 500;  CONFIRM_H = 130;
         CONFIRM_BTN_W = 80;  CONFIRM_BTN_H = 40;
@@ -385,7 +391,7 @@ static void input_init_layout(void)
         IGPOPUP_W = 460;  IGPOPUP_PAD = 16;
         IGPOPUP_TITLE_H = 28;  IGPOPUP_ROW_H = 44;
         IGPOPUP_BTN_W = 112;  IGPOPUP_BTN_H = 40;
-        IGPOPUP_ROWS = 8;
+        IGPOPUP_ROWS = 10;
 
         CONFIRM_W = 420;  CONFIRM_H = 120;
         CONFIRM_BTN_W = 80;  CONFIRM_BTN_H = 36;
@@ -429,11 +435,6 @@ static void input_init_layout(void)
         SAVE_Y = BTN_BOT_Y;  SAVE_WIDTH = BTN_BOT_WIDTH;  SAVE_HEIGHT = BTN_BOT_HEIGHT;
         OPTIONS_X = ZOOM_X + ZOOM_WIDTH + BTN_BOT_GAP;
         OPTIONS_Y = BTN_BOT_Y;  OPTIONS_WIDTH = BTN_BOT_WIDTH;  OPTIONS_HEIGHT = BTN_BOT_HEIGHT;
-    }
-
-    /* Add Paddle Controls row for paddle games */
-    if (machine_is_paddle_game()) {
-        IGPOPUP_ROWS += 1;
     }
 
     IGPOPUP_H = IGPOPUP_PAD + IGPOPUP_TITLE_H + IGPOPUP_PAD
@@ -813,8 +814,12 @@ void input_draw_controls_gl(void)
         float alpha = (g_notify_timer > 30) ? 0.9f : (g_notify_timer / 30.0f) * 0.9f;
         int text_w = font_string_width(g_notify_text, 3);
         int text_x = (device_screen_width() - text_w) / 2;
-        font_draw_string(g_notify_text, text_x, BTN_Y + 12, 3,
-                         1.0f, 1.0f, 1.0f, alpha);
+        if (g_notify_orange)
+            font_draw_string(g_notify_text, text_x, BTN_Y + 12, 3,
+                             1.0f, 0.5f, 0.15f, alpha);
+        else
+            font_draw_string(g_notify_text, text_x, BTN_Y + 12, 3,
+                             1.0f, 1.0f, 1.0f, alpha);
     }
 
     /* Keyboard key labels (shown when keyboard is active) */
@@ -1000,7 +1005,10 @@ void input_draw_controls_sw(void)
         uint8_t alpha = (g_notify_timer > 30) ? 230 : (uint8_t)(g_notify_timer * 230 / 30);
         int text_w = sw_string_width(g_notify_text, 3);
         int text_x = (device_screen_width() - text_w) / 2;
-        sw_draw_string_a(text_x, BTN_Y + 8, g_notify_text, 3, 255, 255, 255, alpha);
+        if (g_notify_orange)
+            sw_draw_string_a(text_x, BTN_Y + 8, g_notify_text, 3, 255, 128, 38, alpha);
+        else
+            sw_draw_string_a(text_x, BTN_Y + 8, g_notify_text, 3, 255, 255, 255, alpha);
     }
 
 }
@@ -1058,6 +1066,7 @@ void input_draw_popup_sw(void)
                 case 4: row_label = "Scanlines"; label = video_get_scanlines_label(); break;
                 case 5: row_label = "Palette (7800)"; label = video_get_palette_label(); break;
                 case 6: row_label = "Bug Report"; label = "EMAIL"; break;
+                case 7: row_label = "Add to Launcher"; label = "ADD"; break;
             }
 
             /* Row label */
@@ -1174,6 +1183,7 @@ void input_draw_popup_sw(void)
                            btn_cy + (CONFIRM_BTN_H - 16) / 2, "No", 2, 255, 128, 38);
         }
     }
+
 }
 
 /* Check if reset button is pressed */
@@ -1390,12 +1400,22 @@ void input_set_save_exists(int exists)
     g_save_exists = exists;
 }
 
-/* Show a notification message at the top of the screen */
+/* Show a notification message at the top of the screen (white) */
 void input_show_notification(const char *text)
 {
     strncpy(g_notify_text, text, sizeof(g_notify_text) - 1);
     g_notify_text[sizeof(g_notify_text) - 1] = '\0';
     g_notify_timer = NOTIFY_FRAMES;
+    g_notify_orange = 0;
+}
+
+/* Show a notification message in orange (used for shortcut confirmations) */
+void input_show_notification_orange(const char *text)
+{
+    strncpy(g_notify_text, text, sizeof(g_notify_text) - 1);
+    g_notify_text[sizeof(g_notify_text) - 1] = '\0';
+    g_notify_timer = NOTIFY_FRAMES;
+    g_notify_orange = 1;
 }
 
 /* Tick notification timer (call once per frame) */
@@ -1478,6 +1498,64 @@ void input_set_paddle_control_mode(int v) { g_paddle_control_mode = (v == 1) ? 1
 
 int input_autosave_warn_visible(void) { return g_autosave_warn_visible; }
 int input_autosave_warn_result(void)  { return g_autosave_warn_result; }
+
+/* Build a display title from a ROM path: strip dir + ext, capitalize, spaces */
+static void extract_rom_title(const char *path, char *buf, int buflen)
+{
+    const char *name = strrchr(path, '/');
+    const char *ext;
+    int i;
+    name = name ? name + 1 : path;
+    strncpy(buf, name, buflen - 1);
+    buf[buflen - 1] = '\0';
+    ext = strrchr(buf, '.');
+    if (ext) *(char *)ext = '\0';
+    for (i = 0; buf[i]; i++) {
+        if (buf[i] == '_' || buf[i] == '-') buf[i] = ' ';
+    }
+    if (buf[0] >= 'a' && buf[0] <= 'z') buf[0] = (char)(buf[0] - 'a' + 'A');
+}
+
+/* Escape " and \ in src for embedding in a JSON string */
+static void json_escape(const char *src, char *dst, int dstlen)
+{
+    int i = 0;
+    while (*src && i < dstlen - 2) {
+        if (*src == '"' || *src == '\\') dst[i++] = '\\';
+        dst[i++] = *src++;
+    }
+    dst[i] = '\0';
+}
+
+/* Create a webOS launcher icon for the currently running ROM */
+static void make_launcher_shortcut(void)
+{
+    typedef int (*ServiceCallFunc)(const char *, const char *);
+    ServiceCallFunc fn;
+    const char *rom_path = main_get_current_rom_path();
+    char title[256];
+    char escaped_title[512];
+    char escaped_path[1024];
+    char payload[2048];
+
+    if (!rom_path || !rom_path[0]) return;
+
+    extract_rom_title(rom_path, title, sizeof(title));
+    json_escape(title, escaped_title, sizeof(escaped_title));
+    json_escape(rom_path, escaped_path, sizeof(escaped_path));
+
+    snprintf(payload, sizeof(payload),
+        "{\"id\":\"com.emu7800.touchpad\","
+        "\"title\":\"%s\","
+        "\"params\":{\"rom\":\"%s\"},"
+        "\"icon\":\"/media/internal/.emu7800/shortcut_icon.png\"}",
+        escaped_title, escaped_path);
+
+    fn = (ServiceCallFunc)dlsym(RTLD_DEFAULT, "PDL_ServiceCall");
+    if (fn) fn("palm://com.palm.applicationManager/addLaunchPoint", payload);
+
+    input_show_notification("Shortcut Added");
+}
 
 /* Draw the OPTIONS popup overlay */
 void input_draw_popup_gl(void)
@@ -1572,6 +1650,10 @@ void input_draw_popup_gl(void)
                 case 8:
                     row_label = "Bug Report";
                     label = "EMAIL";
+                    break;
+                case 9:
+                    row_label = "Add to Launcher";
+                    label = "ADD";
                     break;
             }
 
@@ -1850,6 +1932,11 @@ static void input_popup_handle_touch(int x, int y)
                         if (fn) fn("palm://com.palm.applicationManager/open",
                                    "{\"target\":\"mailto:alanmorford@gmail.com?subject=EMU7800%20bug%20report\"}");
                     }
+                    break;
+                case 9: /* Add to Launcher */
+                    g_options_popup_visible = 0;
+                    filepicker_save_settings();
+                    make_launcher_shortcut();
                     break;
             }
             break;  /* Only process one row */

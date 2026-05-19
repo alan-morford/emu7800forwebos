@@ -246,6 +246,12 @@ static int get_rom_type(const char *name)
     return ENTRY_FILE;
 }
 
+int filepicker_detect_rom_type(const char *path)
+{
+    const char *name = strrchr(path, '/');
+    return get_rom_type(name ? name + 1 : path);
+}
+
 /* Load last ROM from persistence file */
 static void load_last_rom(void)
 {

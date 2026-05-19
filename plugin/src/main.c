@@ -13,8 +13,10 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <sys/time.h>
+#include <sys/stat.h>
 #include <pthread.h>
 #include <SDL.h>
 #include <GLES/gl.h>
@@ -68,6 +70,9 @@ static TouchDedup g_touch_dedup[8];  /* Per finger ID (0-7) */
 /* Current ROM path for save state */
 static char g_current_rom_path[512] = {0};
 
+/* ROM path to auto-launch from shortcut (set from argv[1]) */
+static char g_autolaunch_path[512] = {0};
+
 /*
  * Pre3 emulator thread — runs machine_run_frame() + audio_update() independently
  * of the SW render loop, because SDL_SWSURFACE flip has no vsync.  On the
@@ -114,17 +119,111 @@ static void shutdown_sdl(void);
 static void main_loop(void);
 static uint64_t process_events(void);
 static void launch_selected_rom(void);
+static void launch_rom_direct(const char *path);
 static void return_to_filepicker(void);
 static void emu_thread_start(void);
 static void emu_thread_stop(void);
 static void emu_thread_wait_idle(void);
 
+/* Public getter used by input.c to build the addLaunchPoint payload */
+const char *main_get_current_rom_path(void)
+{
+    return g_current_rom_path;
+}
+
+/* Extract "rom" path from a JSON launch-params string (e.g. {"rom":"/media/..."}).
+   webOS escapes forward slashes as \/ in JSON, so we unescape as we copy. */
+static void parse_launch_params(const char *json)
+{
+    const char *p = strstr(json, "\"rom\"");
+    char *out;
+    char logbuf[640];
+    if (!p) return;
+    p = strchr(p + 5, ':');
+    if (!p) return;
+    while (*p == ':' || *p == ' ' || *p == '\t') p++;
+    if (*p != '"') return;
+    p++;
+
+    out = g_autolaunch_path;
+    while (*p && *p != '"' && (out - g_autolaunch_path) < (int)sizeof(g_autolaunch_path) - 1) {
+        if (*p == '\\' && *(p + 1)) {
+            p++;  /* skip backslash; next char is the escaped character */
+            *out++ = *p++;  /* \/ -> /, \\ -> \, \" -> ", etc. */
+        } else {
+            *out++ = *p++;
+        }
+    }
+    *out = '\0';
+
+    if (out == g_autolaunch_path) return;  /* nothing extracted */
+    snprintf(logbuf, sizeof(logbuf), "parse_launch_params: path=[%s]", g_autolaunch_path);
+    log_msg(logbuf);
+}
+
+static void copy_shortcut_icon(const char *argv0)
+{
+    char src[512];
+    const char *last_slash;
+    const char *dst = "/media/internal/.emu7800/shortcut_icon.png";
+    FILE *in, *out;
+    char buf[4096];
+    int n;
+
+    if (!argv0 || !argv0[0]) return;
+    last_slash = strrchr(argv0, '/');
+    if (!last_slash) return;
+    snprintf(src, sizeof(src), "%.*s/shortcut_icon.png",
+             (int)(last_slash - argv0), argv0);
+
+    mkdir("/media/internal/.emu7800", 0755);
+
+    in = fopen(src, "rb");
+    if (!in) { log_msg("copy_shortcut_icon: src not found"); return; }
+    out = fopen(dst, "wb");
+    if (!out) { fclose(in); log_msg("copy_shortcut_icon: dst open failed"); return; }
+    while ((n = (int)fread(buf, 1, sizeof(buf), in)) > 0)
+        fwrite(buf, 1, (size_t)n, out);
+    fclose(in);
+    fclose(out);
+    log_msg("copy_shortcut_icon: OK");
+}
+
 int main(int argc, char *argv[])
 {
-    (void)argc;
-    (void)argv;
+    char logbuf[768];
+    int i;
+    const char *env_params;
 
-    log_msg("EMU7800 starting... [build: emu7800-v1.8.2]");
+    log_msg("EMU7800 starting... [build: emu7800-v1.8.3]");
+
+    /* Log all argv so we can see how webOS passes shortcut params */
+    snprintf(logbuf, sizeof(logbuf), "argc=%d", argc);
+    log_msg(logbuf);
+    for (i = 0; i < argc && i < 4; i++) {
+        snprintf(logbuf, sizeof(logbuf), "argv[%d]=%s", i, argv[i] ? argv[i] : "(null)");
+        log_msg(logbuf);
+    }
+
+    /* Copy bundled shortcut icon to writable storage so addLaunchPoint can read it */
+    copy_shortcut_icon(argv[0]);
+
+    /* Try argv[1] first (standard PDK launch params) */
+    if (argc >= 2 && argv[1] && argv[1][0]) {
+        parse_launch_params(argv[1]);
+    }
+
+    /* Fall back to PALM_LAUNCH_PARAMS env var (alternate webOS mechanism) */
+    if (!g_autolaunch_path[0]) {
+        env_params = getenv("PALM_LAUNCH_PARAMS");
+        if (env_params && env_params[0]) {
+            snprintf(logbuf, sizeof(logbuf), "PALM_LAUNCH_PARAMS=%s", env_params);
+            log_msg(logbuf);
+            parse_launch_params(env_params);
+        } else {
+            log_msg("PALM_LAUNCH_PARAMS: not set");
+        }
+    }
 
     /* Detect device and initialize PDL (all PDL calls via dlsym in device.c) */
     device_init();
@@ -157,8 +256,12 @@ int main(int argc, char *argv[])
         filepicker_scan(start_dir ? start_dir : "/media/internal/");
     }
 
-    /* Start in file picker state */
-    g_app_state = APP_STATE_FILEPICKER;
+    /* Auto-launch ROM from shortcut, otherwise show file picker */
+    if (g_autolaunch_path[0]) {
+        launch_rom_direct(g_autolaunch_path);
+    } else {
+        g_app_state = APP_STATE_FILEPICKER;
+    }
     g_running = 1;
 
     /* Enter main loop (handles events, emulation, and rendering) */
@@ -471,6 +574,64 @@ static void launch_selected_rom(void)
     audio_resume();
 
     /* Pre3: start the emulator thread (SW path has no vsync for pacing) */
+    if (!device_has_gl()) {
+        emu_thread_start();
+    }
+
+    g_emulator_paused = 0;
+    g_app_state = APP_STATE_EMULATOR;
+}
+
+/* Launch a ROM directly from a path (used for shortcut launches).
+ * Auto-loads save state if one exists — no popup since the user
+ * chose the shortcut specifically to resume that game. */
+static void launch_rom_direct(const char *path)
+{
+    int type = filepicker_detect_rom_type(path);
+    int load_result;
+    char msg[256];
+
+    if (!path || !path[0]) {
+        log_msg("launch_rom_direct: empty path");
+        g_app_state = APP_STATE_FILEPICKER;
+        return;
+    }
+
+    if (access(path, F_OK) != 0) {
+        snprintf(msg, sizeof(msg), "launch_rom_direct: not found: %s", path);
+        log_msg(msg);
+        filepicker_show_notfound();
+        g_app_state = APP_STATE_FILEPICKER;
+        return;
+    }
+
+    snprintf(msg, sizeof(msg), "launch_rom_direct: %s (type=%d)", path, type);
+    log_msg(msg);
+
+    strncpy(g_current_rom_path, path, sizeof(g_current_rom_path) - 1);
+    g_current_rom_path[sizeof(g_current_rom_path) - 1] = '\0';
+
+    machine_shutdown();
+    machine_init();
+
+    load_result = machine_load_rom(path, type);
+    if (load_result != 0) {
+        log_msg("launch_rom_direct: machine_load_rom failed");
+        g_app_state = APP_STATE_FILEPICKER;
+        return;
+    }
+
+    /* Auto-load save if available */
+    if (savestate_exists(path)) {
+        log_msg("launch_rom_direct: loading save state");
+        savestate_load(path);
+    }
+
+    filepicker_set_last_rom(path, type);
+    input_init();
+    input_set_save_exists(savestate_exists(path));
+    audio_resume();
+
     if (!device_has_gl()) {
         emu_thread_start();
     }

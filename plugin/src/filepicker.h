@@ -64,4 +64,7 @@ int filepicker_keyboard_detected(void);
 /* Show the "File not found" popup (called from main when launch path is missing) */
 void filepicker_show_notfound(void);
 
+/* Detect ROM machine type from file extension (MACHINE_2600, MACHINE_7800, etc.) */
+int filepicker_detect_rom_type(const char *path);
+
 #endif /* FILEPICKER_H */
