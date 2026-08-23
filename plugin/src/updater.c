@@ -18,6 +18,8 @@
 #include <netinet/in.h>
 #include <netdb.h>
 #include <sys/time.h>
+#include <fcntl.h>
+#include <errno.h>
 #include <dlfcn.h>
 #include "updater.h"
 
@@ -60,7 +62,9 @@ static int http_get(const char *host, int port, const char *path,
     struct hostent *he;
     struct sockaddr_in addr;
     struct timeval tv;
-    int sock, sent, total, n;
+    fd_set fds;
+    int sock, sent, total, n, flags, err;
+    socklen_t err_len;
     char request[512];
     char raw[HTTP_BUF_SIZE];
     int raw_len;
@@ -72,21 +76,36 @@ static int http_get(const char *host, int port, const char *path,
     sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) return -1;
 
-    /* 10-second receive timeout */
-    tv.tv_sec = 10;
-    tv.tv_usec = 0;
-    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
     memcpy(&addr.sin_addr, he->h_addr_list[0], he->h_length);
 
-    if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+    /* Non-blocking connect with 5-second timeout */
+    flags = fcntl(sock, F_GETFL, 0);
+    fcntl(sock, F_SETFL, flags | O_NONBLOCK);
+    n = connect(sock, (struct sockaddr *)&addr, sizeof(addr));
+    if (n < 0 && errno == EINPROGRESS) {
+        FD_ZERO(&fds);
+        FD_SET(sock, &fds);
+        tv.tv_sec = 5;
+        tv.tv_usec = 0;
+        n = select(sock + 1, NULL, &fds, NULL, &tv);
+        if (n <= 0) { close(sock); return -1; }
+        err = 0; err_len = sizeof(err);
+        getsockopt(sock, SOL_SOCKET, SO_ERROR, &err, &err_len);
+        if (err != 0) { close(sock); return -1; }
+    } else if (n < 0) {
         close(sock);
         return -1;
     }
+    fcntl(sock, F_SETFL, flags); /* restore blocking */
+
+    /* 10-second timeout for data transfer */
+    tv.tv_sec = 10;
+    tv.tv_usec = 0;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
     /* Send HTTP/1.0 GET (Connection: close — no chunked encoding) */
     snprintf(request, sizeof(request),

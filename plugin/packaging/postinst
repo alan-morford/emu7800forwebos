@@ -1,0 +1,69 @@
+#!/bin/sh
+#
+# postinst -- runs as ROOT via Preware / WebOS Quick Install (NOT palm-install,
+# which runs unprivileged). Enables wired USB game controllers for this
+# launcher-jailed PDK app -- two fixes the jail otherwise blocks:
+#   1. bind-mount /dev/input into the app jail (the jailer omits it)
+#   2. make the input evdev nodes readable by the jail user (uid 5003)
+# Both targets live on the READ-ONLY root fs, so remount it rw first (the next
+# reboot restores ro; a reboot isn't required for these to take effect).
+#
+# Same technique as webOSArchive/webos-sdlquake-hd and the Bluetooth Gamepad
+# package (org.webosarchive.btgamepad) -- see plugin/src/controller.c for why
+# this is needed at all (webOS's SDL has no joydev; pads only ever appear as
+# /dev/input/eventN).
+#
+set -e
+exec </dev/null          # never block reading stdin under the appinstaller
+
+UDEVRULE=/etc/udev/rules.d/99-emu7800-pad.rules
+
+# appinfo.json type is "pdk", so the app is jailed via /etc/jail_pdk.conf.
+JAILCFG=/etc/jail_pdk.conf
+
+mount -o remount,rw / 2>/dev/null || true
+
+# 1. Expose /dev/input inside the app jail. Idempotent; add the two lines
+#    only if not already present (takes effect on the next app launch, since
+#    jails are rebuilt per launch -- no reboot needed).
+if [ -f "$JAILCFG" ] && ! grep -q "mount ro /dev/input" "$JAILCFG"; then
+    [ -f "$JAILCFG.emu7800-orig" ] || cp "$JAILCFG" "$JAILCFG.emu7800-orig"
+    awk '{print} /^mkdir \/dev$/ && !d {print "mkdir /dev/input"; print "mount ro /dev/input"; d=1}' \
+        "$JAILCFG" > "$JAILCFG.new" && mv "$JAILCFG.new" "$JAILCFG"
+    echo "emu7800: patched $JAILCFG to expose /dev/input in the app jail"
+fi
+
+# 2. udev rule: 0666 on input event nodes so the jailed app can open them.
+#    This webOS udev predates the input_id builtin, so it can't classify a
+#    device as a joystick. Instead we widen any input event node EXCEPT the
+#    TouchPad/Pre3's own built-in button devices -- the touchscreen is NOT
+#    exposed via /dev/input, so there is nothing sensitive to protect, and
+#    any plugged-in USB controller matches.
+cat > "$UDEVRULE" <<'EOF'
+# EMU7800 -- make USB game-controller evdev nodes readable by a
+# launcher-jailed app (uid 5003 can't read the default 0640 root:root nodes).
+SUBSYSTEM!="input", GOTO="emu7800_end"
+KERNEL!="event[0-9]*", GOTO="emu7800_end"
+ATTRS{name}=="gpio-keys", GOTO="emu7800_end"
+ATTRS{name}=="pmic8058_pwrkey", GOTO="emu7800_end"
+ATTRS{name}=="headset", GOTO="emu7800_end"
+MODE="0666"
+LABEL="emu7800_end"
+EOF
+chmod 644 "$UDEVRULE"
+
+# Reload udev rules WITHOUT ever blocking the installer -- fully detached so
+# it can't hold the appinstaller's stdout pipe open. reload_rules alone only
+# affects FUTURE add events, so also retrigger the input subsystem to
+# re-apply MODE to a pad that was already plugged in before install.
+(
+    udevcontrol reload_rules || udevadm control --reload-rules
+    udevtrigger --subsystem-match=input || udevadm trigger --subsystem-match=input
+) </dev/null >/dev/null 2>&1 &
+
+# No sync (would block on the installer's flush of the newly-extracted .ipk)
+# and no remount back to ro (the installer still has bookkeeping to write;
+# a stock device's next boot restores ro anyway -- prerm restores it too).
+
+echo "emu7800: controller support installed. Re-launch EMU7800 and (re)plug the controller."
+exit 0

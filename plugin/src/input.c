@@ -28,8 +28,9 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-/* Access current ROM path from main.c for shortcut creation */
+/* Access current ROM path and logging from main.c */
 extern const char *main_get_current_rom_path(void);
+extern void log_msg(const char *msg);
 
 /* Layout variables — initialized once by input_init_layout() */
 static int DPAD_X, DPAD_Y, DPAD_WIDTH, DPAD_HEIGHT;
@@ -116,6 +117,22 @@ static int g_btn_size = 1;   /* 0=Small, 1=Medium (default), 2=Large */
 static int g_dpad_size = 1;
 static int g_paddle_control_mode = 0;  /* 0=Slider (default), 1=DPad */
 
+/* Controller Buttons ("MAP") popup -- see input_draw_popup_gl/_sw. Not a
+ * persisted setting; shows the fixed gamepad button map, dismissed by
+ * tapping anywhere (same as the Android port's Bluetooth Controls popup). */
+static int g_controls_map_visible = 0;
+
+#define CMAP_ROWS 10
+static const char *cmap_buttons[CMAP_ROWS] = {
+    "B / Y", "A / X", "D-Pad", "L Stick",
+    "LT", "RT", "Start", "Select", "LB", "RB"
+};
+static const char *cmap_actions[CMAP_ROWS] = {
+    "Fire 1", "Fire 2", "Joystick", "Paddle",
+    "Select", "Reset", "Pause", "Back",
+    "Save State", "Load State"
+};
+
 /* Keyboard state */
 static int g_keyboard_active = 0;  /* Set to 1 on first key event, cleared on touch */
 static int g_key_up = 0;
@@ -158,13 +175,23 @@ static int point_in_circle(int px, int py, int cx, int cy, int radius)
 /* Forward declaration */
 static void input_popup_handle_touch(int x, int y);
 
-/* Control dim multiplier */
+/* Control Visibility alpha multiplier: BRIGHT=1.0, DIM=0.75, DIMMER=0.50,
+ * OFF=0.0 (fully invisible; touch hit-testing is unaffected either way).
+ * Applies to the D-pad/paddle-slider/Fire/Fire2 cluster only. */
 static float get_dim_multiplier(void) {
     switch (g_control_dim) {
         case 1: return 0.75f;
         case 2: return 0.50f;
+        case 3: return 0.0f;
         default: return 1.0f;
     }
+}
+
+/* Same cycle, but for BACK/PAUSE/SELECT/RESET/SAVE/LOAD/ZOOM/OPTIONS: OFF
+ * clamps to DIMMER's alpha instead of going fully invisible, so those stay
+ * reachable by sight even with a controller doing the D-pad/Fire work. */
+static float get_meta_dim_multiplier(void) {
+    return (g_control_dim == 3) ? 0.50f : get_dim_multiplier();
 }
 
 /* Find a free touch slot, returns index or -1 */
@@ -359,7 +386,7 @@ static void input_init_layout(void)
         IGPOPUP_W = 600;  IGPOPUP_PAD = 16;
         IGPOPUP_TITLE_H = 28;  IGPOPUP_ROW_H = 42;
         IGPOPUP_BTN_W = 112;  IGPOPUP_BTN_H = 40;
-        IGPOPUP_ROWS = 8;
+        IGPOPUP_ROWS = 7;   /* no Add to Launcher, no Controller Buttons (Pre3 has neither) */
 
         CONFIRM_W = 500;  CONFIRM_H = 130;
         CONFIRM_BTN_W = 80;  CONFIRM_BTN_H = 40;
@@ -391,7 +418,7 @@ static void input_init_layout(void)
         IGPOPUP_W = 460;  IGPOPUP_PAD = 16;
         IGPOPUP_TITLE_H = 28;  IGPOPUP_ROW_H = 44;
         IGPOPUP_BTN_W = 112;  IGPOPUP_BTN_H = 40;
-        IGPOPUP_ROWS = 10;
+        IGPOPUP_ROWS = 11;
 
         CONFIRM_W = 420;  CONFIRM_H = 120;
         CONFIRM_BTN_W = 80;  CONFIRM_BTN_H = 36;
@@ -470,6 +497,7 @@ void input_init(void)
     g_zoom_pressed = 0;
     g_options_pressed = 0;
     g_options_popup_visible = 0;
+    g_controls_map_visible = 0;
     g_confirm_visible = 0;
     g_confirm_result = -1;
     g_autosave_warn_visible = 0;
@@ -487,7 +515,7 @@ void input_handle_touch_down(int finger_id, int x, int y)
     TouchTarget target = TOUCH_NONE;
 
     /* Intercept all touches when popup/confirm/warning is visible */
-    if (g_options_popup_visible || g_confirm_visible || g_autosave_warn_visible) {
+    if (g_options_popup_visible || g_controls_map_visible || g_confirm_visible || g_autosave_warn_visible) {
         input_popup_handle_touch(x, y);
         return;
     }
@@ -675,13 +703,16 @@ void input_draw_controls_gl(void)
     int fire_pressed = is_target_active(TOUCH_FIRE);
     int fire2_pressed = is_target_active(TOUCH_FIRE2);
     float dim = get_dim_multiplier();
+    float meta_dim = get_meta_dim_multiplier();
 
     /* Enable blending for transparency */
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDisable(GL_TEXTURE_2D);
 
-    /* Paddle slider or D-pad */
+    /* Paddle slider or D-pad. When Control Visibility is OFF, dim == 0.0f
+     * and every alpha below is zero -- fully invisible without a separate
+     * skip-draw flag (touch hit-testing is unaffected either way). */
     if (machine_is_paddle_game() && g_paddle_control_mode == 0) {
         int inner_w = SLIDER_W - 2 * SLIDER_KNOB_R;
         int knob_x = SLIDER_X + SLIDER_KNOB_R + (machine_get_paddle(0) * inner_w) / 255;
@@ -737,76 +768,79 @@ void input_draw_controls_gl(void)
         }
     }
 
-    /* Draw top button bar: BACK, PAUSE (left) ... SELECT, RESET (right) */
+    /* Draw top button bar: BACK, PAUSE (left) ... SELECT, RESET (right).
+     * Uses meta_dim, not dim -- OFF clamps these to DIMMER instead of
+     * hiding them (the gamepad's Start/Back/LB/RB/LT/RT cover their
+     * functions, but they should stay visible for touch/sighted use). */
     /* BACK (orange, same as fire button) */
-    draw_rect_gl(BACK_X, BTN_Y, BACK_WIDTH, BTN_HEIGHT, 1.0f, 0.5f, 0.15f, 0.4f * dim);
+    draw_rect_gl(BACK_X, BTN_Y, BACK_WIDTH, BTN_HEIGHT, 1.0f, 0.5f, 0.15f, 0.4f * meta_dim);
     {
         int bw = font_string_width("BACK", 2);
         font_draw_string("BACK", BACK_X + (BACK_WIDTH - bw) / 2, BTN_Y + 12, 2,
-                         1.0f, 1.0f, 1.0f, 0.5f * dim);
+                         1.0f, 1.0f, 1.0f, 0.5f * meta_dim);
     }
 
     /* PAUSE */
-    draw_rect_gl(PAUSE_X, BTN_Y, PAUSE_WIDTH, BTN_HEIGHT, 0.3f, 0.3f, 0.3f, 0.4f * dim);
+    draw_rect_gl(PAUSE_X, BTN_Y, PAUSE_WIDTH, BTN_HEIGHT, 0.3f, 0.3f, 0.3f, 0.4f * meta_dim);
     {
         int pw = font_string_width("PAUSE", 2);
         font_draw_string("PAUSE", PAUSE_X + (PAUSE_WIDTH - pw) / 2, BTN_Y + 12, 2,
-                         1.0f, 0.5f, 0.15f, 0.5f * dim);
+                         1.0f, 0.5f, 0.15f, 0.5f * meta_dim);
     }
 
     /* SELECT */
-    draw_rect_gl(SELECT_X, BTN_Y, SELECT_WIDTH, BTN_HEIGHT, 0.3f, 0.3f, 0.3f, 0.4f * dim);
+    draw_rect_gl(SELECT_X, BTN_Y, SELECT_WIDTH, BTN_HEIGHT, 0.3f, 0.3f, 0.3f, 0.4f * meta_dim);
     {
         int sw = font_string_width("SELECT", 2);
         font_draw_string("SELECT", SELECT_X + (SELECT_WIDTH - sw) / 2, BTN_Y + 12, 2,
-                         1.0f, 0.5f, 0.15f, 0.5f * dim);
+                         1.0f, 0.5f, 0.15f, 0.5f * meta_dim);
     }
 
     /* RESET */
-    draw_rect_gl(RESET_X, BTN_Y, RESET_WIDTH, BTN_HEIGHT, 0.3f, 0.3f, 0.3f, 0.4f * dim);
+    draw_rect_gl(RESET_X, BTN_Y, RESET_WIDTH, BTN_HEIGHT, 0.3f, 0.3f, 0.3f, 0.4f * meta_dim);
     {
         int rw = font_string_width("RESET", 2);
         font_draw_string("RESET", RESET_X + (RESET_WIDTH - rw) / 2, BTN_Y + 12, 2,
-                         1.0f, 0.5f, 0.15f, 0.5f * dim);
+                         1.0f, 0.5f, 0.15f, 0.5f * meta_dim);
     }
 
     /* Draw bottom SAVE/LOAD/ZOOM/OPTIONS buttons */
     /* SAVE */
-    draw_rect_gl(SAVE_X, SAVE_Y, SAVE_WIDTH, SAVE_HEIGHT, 0.3f, 0.3f, 0.3f, 0.4f * dim);
+    draw_rect_gl(SAVE_X, SAVE_Y, SAVE_WIDTH, SAVE_HEIGHT, 0.3f, 0.3f, 0.3f, 0.4f * meta_dim);
     {
         int svw = font_string_width("SAVE", 2);
         font_draw_string("SAVE", SAVE_X + (SAVE_WIDTH - svw) / 2, SAVE_Y + 12, 2,
-                         1.0f, 0.5f, 0.15f, 0.5f * dim);
+                         1.0f, 0.5f, 0.15f, 0.5f * meta_dim);
     }
 
     /* LOAD (greyed out if no save file exists) */
     if (g_save_exists) {
         int lw = font_string_width("LOAD", 2);
-        draw_rect_gl(LOAD_X, LOAD_Y, LOAD_WIDTH, LOAD_HEIGHT, 0.3f, 0.3f, 0.3f, 0.4f * dim);
+        draw_rect_gl(LOAD_X, LOAD_Y, LOAD_WIDTH, LOAD_HEIGHT, 0.3f, 0.3f, 0.3f, 0.4f * meta_dim);
         font_draw_string("LOAD", LOAD_X + (LOAD_WIDTH - lw) / 2, LOAD_Y + 12, 2,
-                         1.0f, 0.5f, 0.15f, 0.5f * dim);
+                         1.0f, 0.5f, 0.15f, 0.5f * meta_dim);
     } else {
         int lw = font_string_width("LOAD", 2);
-        draw_rect_gl(LOAD_X, LOAD_Y, LOAD_WIDTH, LOAD_HEIGHT, 0.2f, 0.2f, 0.2f, 0.15f * dim);
+        draw_rect_gl(LOAD_X, LOAD_Y, LOAD_WIDTH, LOAD_HEIGHT, 0.2f, 0.2f, 0.2f, 0.15f * meta_dim);
         font_draw_string("LOAD", LOAD_X + (LOAD_WIDTH - lw) / 2, LOAD_Y + 12, 2,
-                         0.5f, 0.5f, 0.5f, 0.3f * dim);
+                         0.5f, 0.5f, 0.5f, 0.3f * meta_dim);
     }
 
     /* ZOOM */
-    draw_rect_gl(ZOOM_X, ZOOM_Y, ZOOM_WIDTH, ZOOM_HEIGHT, 0.3f, 0.3f, 0.3f, 0.4f * dim);
+    draw_rect_gl(ZOOM_X, ZOOM_Y, ZOOM_WIDTH, ZOOM_HEIGHT, 0.3f, 0.3f, 0.3f, 0.4f * meta_dim);
     {
         int zw = font_string_width("ZOOM", 2);
         font_draw_string("ZOOM", ZOOM_X + (ZOOM_WIDTH - zw) / 2, ZOOM_Y + 12, 2,
-                         1.0f, 0.5f, 0.15f, 0.5f * dim);
+                         1.0f, 0.5f, 0.15f, 0.5f * meta_dim);
     }
 
     /* OPTIONS */
-    draw_rect_gl(OPTIONS_X, OPTIONS_Y, OPTIONS_WIDTH, OPTIONS_HEIGHT, 0.3f, 0.3f, 0.3f, 0.4f * dim);
+    draw_rect_gl(OPTIONS_X, OPTIONS_Y, OPTIONS_WIDTH, OPTIONS_HEIGHT, 0.3f, 0.3f, 0.3f, 0.4f * meta_dim);
     {
         const char *opt_label = (g_btn_size == 2 && machine_get_type() == MACHINE_7800) ? "OPT" : "OPTIONS";
         int ow = font_string_width(opt_label, 2);
         font_draw_string(opt_label, OPTIONS_X + (OPTIONS_WIDTH - ow) / 2, OPTIONS_Y + 12, 2,
-                         1.0f, 0.5f, 0.15f, 0.5f * dim);
+                         1.0f, 0.5f, 0.15f, 0.5f * meta_dim);
     }
 
     /* Draw notification text at top center */
@@ -851,23 +885,23 @@ void input_draw_controls_gl(void)
 
         /* Top bar button labels (orange, centered below each button) */
         font_draw_string("1", BACK_X + BACK_WIDTH/2 - 4, BTN_Y + BTN_HEIGHT + 4, 2,
-                         1.0f, 0.5f, 0.15f, 0.8f * dim);
+                         1.0f, 0.5f, 0.15f, 0.8f * meta_dim);
         font_draw_string("2", PAUSE_X + PAUSE_WIDTH/2 - 4, BTN_Y + BTN_HEIGHT + 4, 2,
-                         1.0f, 0.5f, 0.15f, 0.8f * dim);
+                         1.0f, 0.5f, 0.15f, 0.8f * meta_dim);
         font_draw_string("3", SELECT_X + SELECT_WIDTH/2 - 4, BTN_Y + BTN_HEIGHT + 4, 2,
-                         1.0f, 0.5f, 0.15f, 0.8f * dim);
+                         1.0f, 0.5f, 0.15f, 0.8f * meta_dim);
         font_draw_string("4", RESET_X + RESET_WIDTH/2 - 4, BTN_Y + BTN_HEIGHT + 4, 2,
-                         1.0f, 0.5f, 0.15f, 0.8f * dim);
+                         1.0f, 0.5f, 0.15f, 0.8f * meta_dim);
 
         /* Bottom bar button labels (orange, centered above each button) */
         font_draw_string("5", SAVE_X + SAVE_WIDTH/2 - 4, SAVE_Y - 18, 2,
-                         1.0f, 0.5f, 0.15f, 0.8f * dim);
+                         1.0f, 0.5f, 0.15f, 0.8f * meta_dim);
         font_draw_string("6", LOAD_X + LOAD_WIDTH/2 - 4, LOAD_Y - 18, 2,
-                         1.0f, 0.5f, 0.15f, 0.8f * dim);
+                         1.0f, 0.5f, 0.15f, 0.8f * meta_dim);
         font_draw_string("7", ZOOM_X + ZOOM_WIDTH/2 - 4, ZOOM_Y - 18, 2,
-                         1.0f, 0.5f, 0.15f, 0.8f * dim);
+                         1.0f, 0.5f, 0.15f, 0.8f * meta_dim);
         font_draw_string("8", OPTIONS_X + OPTIONS_WIDTH/2 - 4, OPTIONS_Y - 18, 2,
-                         1.0f, 0.5f, 0.15f, 0.8f * dim);
+                         1.0f, 0.5f, 0.15f, 0.8f * meta_dim);
     }
 
     glDisable(GL_BLEND);
@@ -889,9 +923,12 @@ void input_draw_controls_sw(void)
     int fire_pressed = is_target_active(TOUCH_FIRE);
     int fire2_pressed = is_target_active(TOUCH_FIRE2);
     float dim = get_dim_multiplier();
+    float meta_dim = get_meta_dim_multiplier();
     uint8_t da = f2b(0.25f * dim);  /* dpad bg alpha */
 
-    /* Paddle slider or D-pad */
+    /* Paddle slider or D-pad. When Control Visibility is OFF, dim == 0.0f
+     * and every alpha below is zero -- fully invisible without a separate
+     * skip-draw flag (touch hit-testing is unaffected either way). */
     if (machine_is_paddle_game() && g_paddle_control_mode == 0) {
         int inner_w = SLIDER_W - 2 * SLIDER_KNOB_R;
         int knob_x = SLIDER_X + SLIDER_KNOB_R + (machine_get_paddle(0) * inner_w) / 255;
@@ -941,10 +978,11 @@ void input_draw_controls_sw(void)
                          FIRE2_SIZE/2, 255, 128, 38, fa);
     }
 
-    /* Top button bar */
+    /* Top button bar. Uses meta_dim, not dim -- OFF clamps these to
+     * DIMMER instead of hiding them (see get_meta_dim_multiplier()). */
     {
-        uint8_t ba = f2b(0.4f * dim);
-        uint8_t ta = f2b(0.5f * dim);
+        uint8_t ba = f2b(0.4f * meta_dim);
+        uint8_t ta = f2b(0.5f * meta_dim);
         int bw, pw, selw, rw;
 
         /* BACK */
@@ -970,8 +1008,8 @@ void input_draw_controls_sw(void)
 
     /* Bottom buttons */
     {
-        uint8_t ba = f2b(0.4f * dim);
-        uint8_t ta = f2b(0.5f * dim);
+        uint8_t ba = f2b(0.4f * meta_dim);
+        uint8_t ta = f2b(0.5f * meta_dim);
         int svw, lw, zw, ow;
 
         /* SAVE */
@@ -985,8 +1023,8 @@ void input_draw_controls_sw(void)
             sw_fill_rect_a(LOAD_X, LOAD_Y, LOAD_WIDTH, LOAD_HEIGHT, 77, 77, 77, ba);
             sw_draw_string_a(LOAD_X + (LOAD_WIDTH - lw) / 2, LOAD_Y + 8, "LOAD", 2, 255, 128, 38, ta);
         } else {
-            sw_fill_rect_a(LOAD_X, LOAD_Y, LOAD_WIDTH, LOAD_HEIGHT, 51, 51, 51, f2b(0.15f * dim));
-            sw_draw_string_a(LOAD_X + (LOAD_WIDTH - lw) / 2, LOAD_Y + 8, "LOAD", 2, 128, 128, 128, f2b(0.3f * dim));
+            sw_fill_rect_a(LOAD_X, LOAD_Y, LOAD_WIDTH, LOAD_HEIGHT, 51, 51, 51, f2b(0.15f * meta_dim));
+            sw_draw_string_a(LOAD_X + (LOAD_WIDTH - lw) / 2, LOAD_Y + 8, "LOAD", 2, 128, 128, 128, f2b(0.3f * meta_dim));
         }
 
         /* ZOOM */
@@ -1020,8 +1058,33 @@ void input_draw_popup_sw(void)
     int row_x, row_y, btn_x, btn_y;
     const char *label;
 
-    if (!g_options_popup_visible && !g_confirm_visible && !g_autosave_warn_visible)
+    if (!g_options_popup_visible && !g_controls_map_visible && !g_confirm_visible && !g_autosave_warn_visible)
         return;
+
+    if (g_controls_map_visible) {
+        int cmap_row_h = device_is_small() ? 38 : IGPOPUP_ROW_H;
+        int cmap_h = IGPOPUP_PAD + IGPOPUP_TITLE_H + IGPOPUP_PAD + CMAP_ROWS * cmap_row_h + IGPOPUP_PAD;
+        int cmap_x = (device_screen_width() - IGPOPUP_W) / 2;
+        int cmap_y = (device_screen_height() - cmap_h) / 2;
+        int i;
+
+        sw_fill_rect_a(0, 0, device_screen_width(), device_screen_height(), 0, 0, 0, 153);
+        sw_fill_rect(cmap_x - 1, cmap_y - 1, IGPOPUP_W + 2, cmap_h + 2, 255, 128, 38);
+        sw_fill_rect(cmap_x, cmap_y, IGPOPUP_W, cmap_h, 0, 0, 0);
+
+        {
+            int tw = sw_string_width("CONTROLS MAP", 3);
+            sw_draw_string(cmap_x + (IGPOPUP_W - tw) / 2, cmap_y + IGPOPUP_PAD, "CONTROLS MAP", 3, 255, 128, 38);
+        }
+
+        for (i = 0; i < CMAP_ROWS; i++) {
+            int row_y = cmap_y + IGPOPUP_PAD + IGPOPUP_TITLE_H + IGPOPUP_PAD + i * cmap_row_h;
+            int text_y = row_y + (cmap_row_h - 16) / 2;
+            int aw = sw_string_width(cmap_actions[i], 2);
+            sw_draw_string(cmap_x + IGPOPUP_PAD, text_y, cmap_buttons[i], 2, 255, 255, 255);
+            sw_draw_string(cmap_x + IGPOPUP_W - IGPOPUP_PAD - aw, text_y, cmap_actions[i], 2, 255, 128, 38);
+        }
+    }
 
     if (g_options_popup_visible) {
         /* Dark overlay (full screen black 60%) */
@@ -1056,7 +1119,8 @@ void input_draw_popup_sw(void)
                 case 1: row_label = "Ask Before Saving"; label = g_autosave_ask ? "ON" : "OFF";
                     if (!g_autosave) { lbl_r = 102; lbl_g = 102; lbl_b = 102; label_alpha = 128; }
                     break;
-                case 2: row_label = "Control Brightness";
+                case 2: row_label = "Control Visibility";
+                    /* No OFF on Pre3 -- no controller to fall back on, see input_set_control_dim() */
                     switch (g_control_dim) { case 1: label = "DIM"; break; case 2: label = "DIMMER"; break; default: label = "BRIGHT"; break; }
                     break;
                 case 3: row_label = "Paddle Controls";
@@ -1066,7 +1130,9 @@ void input_draw_popup_sw(void)
                 case 4: row_label = "Scanlines"; label = video_get_scanlines_label(); break;
                 case 5: row_label = "Palette (7800)"; label = video_get_palette_label(); break;
                 case 6: row_label = "Bug Report"; label = "EMAIL"; break;
-                case 7: row_label = "Add to Launcher"; label = "ADD"; break;
+                /* No Add to Launcher (shortcut launch never worked right on
+                 * Pre3) and no Controller Buttons (Pre3 has no USB host /
+                 * controller support) -- TouchPad-only, see IGPOPUP_ROWS above */
             }
 
             /* Row label */
@@ -1208,6 +1274,13 @@ int input_back_pressed(void)
     return 0;
 }
 
+/* Gamepad Back button, no popup was up: same one-shot flag TOUCH_BACK sets,
+ * so it flows through the existing autosave-confirm-then-return logic. */
+void input_set_back_pressed(void)
+{
+    g_back_pressed = 1;
+}
+
 /* Check if pause button was pressed (returns 1 once, then clears) */
 int input_pause_pressed(void)
 {
@@ -1216,6 +1289,13 @@ int input_pause_pressed(void)
         return 1;
     }
     return 0;
+}
+
+/* Gamepad Start button: same one-shot flag TOUCH_PAUSE sets, so it flows
+ * through the existing pause/unpause toggle in main.c's loop. */
+void input_set_pause_pressed(void)
+{
+    g_pause_pressed = 1;
 }
 
 /* Check if save button was pressed (returns 1 once, then clears) */
@@ -1237,6 +1317,10 @@ int input_load_pressed(void)
     }
     return 0;
 }
+
+/* Gamepad LB/RB: same one-shot flags TOUCH_SAVE/TOUCH_LOAD set */
+void input_set_save_pressed(void) { g_save_pressed = 1; }
+void input_set_load_pressed(void) { g_load_pressed = 1; }
 
 /* Check if zoom button was pressed (returns 1 once, then clears) */
 int input_zoom_pressed(void)
@@ -1452,7 +1536,7 @@ int input_options_pressed(void)
 
 int input_options_popup_visible(void)
 {
-    return g_options_popup_visible;
+    return g_options_popup_visible || g_controls_map_visible;
 }
 
 void input_close_options_popup(void)
@@ -1487,7 +1571,13 @@ void input_set_autosave(int val)  { g_autosave = val ? 1 : 0; }
 int input_get_autosave_ask(void)  { return g_autosave_ask; }
 void input_set_autosave_ask(int val) { g_autosave_ask = val ? 1 : 0; }
 int input_get_control_dim(void)   { return g_control_dim; }
-void input_set_control_dim(int val) { g_control_dim = (val >= 0 && val <= 2) ? val : 0; }
+void input_set_control_dim(int val) {
+    /* No OFF (3) on Pre3 -- there's no controller to fall back on there, so
+     * hiding the whole overlay would strand the user. Clamps a stale value
+     * from an old/transplanted settings file too, not just live cycling. */
+    int max = device_is_small() ? 2 : 3;
+    g_control_dim = (val >= 0 && val <= max) ? val : 0;
+}
 
 int  input_get_btn_size(void)  { return g_btn_size; }
 void input_set_btn_size(int v) { g_btn_size = (v >= 0 && v <= 2) ? v : 1; }
@@ -1498,6 +1588,35 @@ void input_set_paddle_control_mode(int v) { g_paddle_control_mode = (v == 1) ? 1
 
 int input_autosave_warn_visible(void) { return g_autosave_warn_visible; }
 int input_autosave_warn_result(void)  { return g_autosave_warn_result; }
+
+/* Called by main.c when the gamepad Back button is pressed: mirrors the
+ * existing dismiss priority used by input_popup_handle_touch() (autosave
+ * warning > confirm dialog > options popup) so gamepad Back behaves exactly
+ * like tapping outside the topmost popup / choosing No. Returns 1 if a
+ * popup was open and consumed the press, 0 if nothing was visible (caller
+ * should then treat it as the ordinary Back button). */
+int input_gamepad_back_dismiss(void)
+{
+    if (g_controls_map_visible) {
+        g_controls_map_visible = 0;
+        return 1;
+    }
+    if (g_autosave_warn_visible) {
+        g_autosave_warn_result = 0;
+        g_autosave_warn_visible = 0;
+        return 1;
+    }
+    if (g_confirm_visible) {
+        g_confirm_result = 0;
+        return 1;
+    }
+    if (g_options_popup_visible) {
+        g_options_popup_visible = 0;
+        filepicker_save_settings();
+        return 1;
+    }
+    return 0;
+}
 
 /* Build a display title from a ROM path: strip dir + ext, capitalize, spaces */
 static void extract_rom_title(const char *path, char *buf, int buflen)
@@ -1545,14 +1664,25 @@ static void make_launcher_shortcut(void)
     json_escape(rom_path, escaped_path, sizeof(escaped_path));
 
     snprintf(payload, sizeof(payload),
-        "{\"id\":\"com.emu7800.touchpad\","
+        "{\"id\":\"%s\","
         "\"title\":\"%s\","
         "\"params\":{\"rom\":\"%s\"},"
         "\"icon\":\"/media/internal/.emu7800/shortcut_icon.png\"}",
+        device_is_small() ? "com.emu7800.touchpad.launcher" : "com.emu7800.touchpad",
         escaped_title, escaped_path);
 
+    {
+        char logbuf[2176];
+        snprintf(logbuf, sizeof(logbuf), "addLaunchPoint: %s", payload);
+        log_msg(logbuf);
+    }
     fn = (ServiceCallFunc)dlsym(RTLD_DEFAULT, "PDL_ServiceCall");
-    if (fn) fn("palm://com.palm.applicationManager/addLaunchPoint", payload);
+    if (fn) {
+        fn("palm://com.palm.applicationManager/addLaunchPoint", payload);
+        log_msg("addLaunchPoint: called OK");
+    } else {
+        log_msg("addLaunchPoint: PDL_ServiceCall not found");
+    }
 
     input_show_notification("Shortcut Added");
 }
@@ -1565,12 +1695,38 @@ void input_draw_popup_gl(void)
     const char *label;
     float lbl_r, lbl_g, lbl_b, lbl_a;
 
-    if (!g_options_popup_visible && !g_confirm_visible && !g_autosave_warn_visible)
+    if (!g_options_popup_visible && !g_controls_map_visible && !g_confirm_visible && !g_autosave_warn_visible)
         return;
 
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDisable(GL_TEXTURE_2D);
+
+    if (g_controls_map_visible) {
+        int cmap_row_h = device_is_small() ? 38 : IGPOPUP_ROW_H;
+        int cmap_h = IGPOPUP_PAD + IGPOPUP_TITLE_H + IGPOPUP_PAD + CMAP_ROWS * cmap_row_h + IGPOPUP_PAD;
+        int cmap_x = (device_screen_width() - IGPOPUP_W) / 2;
+        int cmap_y = (device_screen_height() - cmap_h) / 2;
+        int i;
+
+        draw_rect_gl(0, 0, device_screen_width(), device_screen_height(), 0.0f, 0.0f, 0.0f, 0.6f);
+        draw_rect_gl(cmap_x - 1, cmap_y - 1, IGPOPUP_W + 2, cmap_h + 2, 1.0f, 0.5f, 0.15f, 1.0f);
+        draw_rect_gl(cmap_x, cmap_y, IGPOPUP_W, cmap_h, 0.0f, 0.0f, 0.0f, 0.95f);
+
+        {
+            int tw = font_string_width("CONTROLS MAP", 3);
+            font_draw_string("CONTROLS MAP", cmap_x + (IGPOPUP_W - tw) / 2,
+                             cmap_y + IGPOPUP_PAD, 3, 1.0f, 0.5f, 0.15f, 1.0f);
+        }
+
+        for (i = 0; i < CMAP_ROWS; i++) {
+            int row_y = cmap_y + IGPOPUP_PAD + IGPOPUP_TITLE_H + IGPOPUP_PAD + i * cmap_row_h;
+            int text_y = row_y + (cmap_row_h - 16) / 2;
+            int aw = font_string_width(cmap_actions[i], 2);
+            font_draw_string(cmap_buttons[i], cmap_x + IGPOPUP_PAD, text_y, 2, 1.0f, 1.0f, 1.0f, 1.0f);
+            font_draw_string(cmap_actions[i], cmap_x + IGPOPUP_W - IGPOPUP_PAD - aw, text_y, 2, 1.0f, 0.5f, 0.15f, 1.0f);
+        }
+    }
 
     if (g_options_popup_visible) {
         /* Dark overlay (full screen black 60%) */
@@ -1614,10 +1770,11 @@ void input_draw_popup_gl(void)
                     }
                     break;
                 case 2:
-                    row_label = "Control Brightness";
+                    row_label = "Control Visibility";
                     switch (g_control_dim) {
                         case 1: label = "DIM"; break;
                         case 2: label = "DIMMER"; break;
+                        case 3: label = "OFF"; break;
                         default: label = "BRIGHT"; break;
                     }
                     break;
@@ -1654,6 +1811,10 @@ void input_draw_popup_gl(void)
                 case 9:
                     row_label = "Add to Launcher";
                     label = "ADD";
+                    break;
+                case 10:
+                    row_label = "Controller Buttons";
+                    label = "MAP";
                     break;
             }
 
@@ -1807,6 +1968,13 @@ void input_draw_popup_gl(void)
 /* Handle touch events when popup/confirm is visible */
 static void input_popup_handle_touch(int x, int y)
 {
+    /* Controller Buttons map: tap anywhere dismisses it (matches the
+     * Android port's Bluetooth Controls popup). */
+    if (g_controls_map_visible) {
+        g_controls_map_visible = 0;
+        return;
+    }
+
     /* Auto-save warning dialog takes highest priority */
     if (g_autosave_warn_visible) {
         int btn_cy = ASWARN_Y + ASWARN_H - CONFIRM_BTN_H - 16;
@@ -1896,8 +2064,9 @@ static void input_popup_handle_touch(int x, int y)
                         }
                     }
                     break;
-                case 2: /* Control Brightness cycle */
-                    g_control_dim = (g_control_dim + 1) % 3;
+                case 2: /* Control Visibility cycle: BRIGHT->DIM->DIMMER->[OFF->]BRIGHT.
+                          * No OFF on Pre3 -- see input_set_control_dim(). */
+                    g_control_dim = (g_control_dim + 1) % (device_is_small() ? 3 : 4);
                     break;
                 case 3: /* Button Size cycle */
                     g_btn_size = (g_btn_size + 1) % 3;
@@ -1937,6 +2106,11 @@ static void input_popup_handle_touch(int x, int y)
                     g_options_popup_visible = 0;
                     filepicker_save_settings();
                     make_launcher_shortcut();
+                    break;
+                case 10: /* Controller Buttons -- open the MAP popup */
+                    g_options_popup_visible = 0;
+                    filepicker_save_settings();
+                    g_controls_map_visible = 1;
                     break;
             }
             break;  /* Only process one row */

@@ -1,0 +1,27 @@
+#!/bin/sh
+#
+# prerm -- runs as ROOT via Preware / WebOS Quick Install before removal,
+# undoing what postinst added. NOTE: the launcher's Delete does NOT run
+# maintainer scripts, so remove via Preware/WOSQI for a clean uninstall (the
+# leftovers are otherwise harmless -- a udev rule and one jail mount line, no
+# daemon).
+#
+JAILCFG=/etc/jail_pdk.conf
+UDEVRULE=/etc/udev/rules.d/99-emu7800-pad.rules
+
+exec </dev/null          # never block reading stdin under the appinstaller
+mount -o remount,rw / 2>/dev/null || true
+
+rm -f "$UDEVRULE"
+
+if [ -f "$JAILCFG" ]; then
+    sed -i -e '/^mkdir \/dev\/input$/d' -e '/^mount ro \/dev\/input$/d' "$JAILCFG"
+    rm -f "$JAILCFG.emu7800-orig"
+    echo "emu7800: reverted the /dev/input jail patch"
+fi
+
+( udevcontrol reload_rules || udevadm control --reload-rules ) </dev/null >/dev/null 2>&1 &
+mount -o remount,ro / 2>/dev/null || true
+
+echo "emu7800: controller support removed."
+exit 0

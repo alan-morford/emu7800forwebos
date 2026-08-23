@@ -195,20 +195,7 @@ uint8_t pia_read(PIA *pia, uint16_t addr, uint64_t cpu_clock)
     switch (addr & 7) {
         case 0:  /* SWCHA: Controllers */
         {
-            uint8_t val = read_port_a(pia);
-            if (g_swcha_read_count < 20) {
-                char msg[160];
-                snprintf(msg, sizeof(msg), "SWCHA READ: addr=$%04X val=$%02X ddra=$%02X written=$%02X left_ctrl=%d right_ctrl=%d joy0=$%02X",
-                         addr, val, pia->ddra, pia->written_port_a,
-                         machine_get_left_controller(), machine_get_right_controller(),
-                         (uint8_t)((machine_sample_joystick(0,3) ? 0 : 0x80) |
-                                   (machine_sample_joystick(0,2) ? 0 : 0x40) |
-                                   (machine_sample_joystick(0,1) ? 0 : 0x20) |
-                                   (machine_sample_joystick(0,0) ? 0 : 0x10)));
-                log_msg(msg);
-                g_swcha_read_count++;
-            }
-            return val;
+            return read_port_a(pia);
         }
         case 1:  /* SWCHA DDR */
             return pia->ddra;

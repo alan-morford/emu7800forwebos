@@ -1,6 +1,6 @@
 {
 	"id": "com.emu7800.touchpad",
-	"version": "1.8.3",
+	"version": "1.8.4",
 	"vendor": "EMU7800",
 	"type": "pdk",
 	"main": "emu7800.arm",

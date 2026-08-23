@@ -33,6 +33,7 @@ SOURCES = \
 	src/video.c \
 	src/audio.c \
 	src/input.c \
+	src/controller.c \
 	src/maria.c \
 	src/pokeysound.c \
 	src/font.c \
@@ -89,4 +90,19 @@ hello: $(HELLO_SRC)
 	$(CC) $(CFLAGS) -o $(HELLO_TARGET) $(HELLO_SRC) $(HELLO_LDFLAGS)
 	$(STRIP) $(HELLO_TARGET)
 
-.PHONY: all clean host check hello
+# Static launcher stub (appinfo.json's "main"): clears any LD_PRELOAD /
+# LD_LIBRARY_PATH leaked in by webOS TLS/OpenSSL patches, then execs the
+# real emulator binary (packaged alongside it as emu7800.real). Statically
+# linked so it has no dynamic-linker pass of its own to be affected by the
+# same leaked variables. See src/launcher_stub.c.
+STUB_SRC = src/launcher_stub.c
+STUB_TARGET = emu7800_launcher.arm
+
+stub: $(STUB_SRC)
+	$(CC) -O2 -Wall -march=armv7-a -static -o $(STUB_TARGET) $(STUB_SRC)
+	$(STRIP) $(STUB_TARGET)
+
+clean-stub:
+	rm -f $(STUB_TARGET)
+
+.PHONY: all clean host check hello stub clean-stub

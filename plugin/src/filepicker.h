@@ -67,4 +67,9 @@ void filepicker_show_notfound(void);
 /* Detect ROM machine type from file extension (MACHINE_2600, MACHINE_7800, etc.) */
 int filepicker_detect_rom_type(const char *path);
 
+/* Gamepad navigation of the main ROM/directory list (see controller.h).
+ * No-ops while any secondary popup (settings/recent/about/etc.) is visible. */
+void filepicker_cursor_move(int delta);      /* -1 = up, +1 = down */
+int  filepicker_cursor_confirm(void);        /* returns 1 if a ROM was selected (launch it) */
+
 #endif /* FILEPICKER_H */

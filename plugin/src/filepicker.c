@@ -120,6 +120,11 @@ static float g_scroll_offset = 0.0f;
 static int g_selected_index = -1;
 static char g_current_dir[MAX_PATH_LEN];
 
+/* Gamepad cursor (main list only — see filepicker_cursor_move/_confirm).
+ * Shown only after the first gamepad nav input, mirrors g_keyboard_detected. */
+static int g_cursor_index = -1;
+static int g_cursor_active = 0;
+
 /* Last played ROM (for resume) */
 static char g_last_rom_path[MAX_PATH_LEN];
 static int g_last_rom_type = 0;
@@ -2612,6 +2617,10 @@ static void filepicker_draw_sw(void)
 
     if (has_dotdot) {
         int dd_y = LIST_TOP + (ITEM_HEIGHT - LIST_SCALE * 8) / 2;
+        if (g_cursor_active && g_cursor_index == 0) {
+            sw_fill_rect_a(MARGIN_X - 4, LIST_TOP, FP_SCREEN_W - 2 * MARGIN_X + 8, ITEM_HEIGHT,
+                           255, 128, 38, 51);
+        }
         sw_draw_string(MARGIN_X, dd_y, "../", LIST_SCALE, 153, 153, 153);
     }
 
@@ -2629,6 +2638,11 @@ static void filepicker_draw_sw(void)
 
         if (iy < scroll_area_top || iy > LIST_BOTTOM) continue;
         item_y = (int)(iy + (ITEM_HEIGHT - LIST_SCALE * 8) / 2);
+
+        if (g_cursor_active && i == g_cursor_index) {
+            sw_fill_rect_a(MARGIN_X - 4, (int)iy, FP_SCREEN_W - 2 * MARGIN_X + 8, ITEM_HEIGHT,
+                           255, 128, 38, 51);
+        }
 
         {
             char disp[MAX_NAME_LEN + 4];
@@ -2983,6 +2997,10 @@ void filepicker_draw(void)
     /* Draw pinned ".." entry (grey, fixed position) */
     if (has_dotdot) {
         int dd_y = LIST_TOP + (ITEM_HEIGHT - 16) / 2;
+        if (g_cursor_active && g_cursor_index == 0) {
+            draw_rect(MARGIN_X - 4, LIST_TOP, FP_SCREEN_W - 2 * MARGIN_X + 8, ITEM_HEIGHT,
+                      1.0f, 0.5f, 0.15f, 0.2f);
+        }
         font_draw_string("../", MARGIN_X, dd_y, 2,
                          0.6f, 0.6f, 0.6f, 1.0f);
     }
@@ -3003,6 +3021,11 @@ void filepicker_draw(void)
         if (iy < scroll_area_top || iy > LIST_BOTTOM) continue;
 
         item_y = (int)(iy + (ITEM_HEIGHT - 16) / 2);
+
+        if (g_cursor_active && i == g_cursor_index) {
+            draw_rect(MARGIN_X - 4, iy, FP_SCREEN_W - 2 * MARGIN_X + 8, ITEM_HEIGHT,
+                      1.0f, 0.5f, 0.15f, 0.2f);
+        }
 
         {
             char disp[MAX_NAME_LEN + 4];
@@ -3090,6 +3113,7 @@ void filepicker_draw(void)
 void filepicker_touch_down(int x, int y)
 {
     g_keyboard_detected = 0;
+    g_cursor_active = 0;
     g_touch_active = 1;
     g_touch_start_x = x;
     g_touch_start_y = y;
@@ -3707,6 +3731,74 @@ int filepicker_touch_up(int x, int y)
     g_resume_selected = 0;
     g_art_selected = 0;
     return check_save_popup();
+}
+
+/* True if any secondary popup is up. Gamepad main-list navigation is scoped
+ * to the ROM/directory list only (see plan) -- secondary popups stay
+ * touch-only, so cursor move/confirm are no-ops while one is visible. */
+static int any_popup_visible(void)
+{
+    return g_recent_popup_visible || g_about_popup_visible || g_save_popup_visible ||
+           g_delete_confirm_visible || g_dirask_popup_visible || g_dirpicker_popup_visible ||
+           g_settings_popup_visible || g_update_popup_visible || g_fp_aswarn_visible ||
+           g_notfound_visible;
+}
+
+/* Move the gamepad highlight cursor by delta rows (-1 = up, +1 = down),
+ * clamping to the file list and scrolling it into view. */
+void filepicker_cursor_move(int delta)
+{
+    int has_dd, sarea_top, visible_h, rel;
+
+    if (any_popup_visible() || g_file_count == 0) return;
+
+    g_cursor_active = 1;
+    has_dd = (g_file_count > 0 && strcmp(g_files[0].name, "..") == 0);
+
+    if (g_cursor_index < 0 || g_cursor_index >= g_file_count) {
+        g_cursor_index = 0;
+    } else {
+        g_cursor_index += delta;
+        if (g_cursor_index < 0) g_cursor_index = 0;
+        if (g_cursor_index >= g_file_count) g_cursor_index = g_file_count - 1;
+    }
+
+    /* Scroll the cursor into view (only the scrollable part, below ".."). */
+    sarea_top = has_dd ? (LIST_TOP + ITEM_HEIGHT) : LIST_TOP;
+    visible_h = LIST_BOTTOM - sarea_top;
+    rel = (g_cursor_index - (has_dd ? 1 : 0)) * ITEM_HEIGHT;
+    if (rel < 0) rel = 0;   /* cursor is on the pinned ".." entry */
+    if (rel < g_scroll_offset) g_scroll_offset = (float)rel;
+    if (rel + ITEM_HEIGHT > g_scroll_offset + visible_h)
+        g_scroll_offset = (float)(rel + ITEM_HEIGHT - visible_h);
+    if (g_scroll_offset < 0) g_scroll_offset = 0;
+}
+
+/* Confirm the highlighted row (gamepad A button). Reuses the existing touch
+ * hit-testing/selection path instead of duplicating it -- returns 1 exactly
+ * like filepicker_touch_up() does, so the caller should launch a ROM on 1. */
+int filepicker_cursor_confirm(void)
+{
+    int has_dd;
+    int x, y;
+
+    if (any_popup_visible() || g_cursor_index < 0 || g_cursor_index >= g_file_count)
+        return 0;
+
+    has_dd = (g_file_count > 0 && strcmp(g_files[0].name, "..") == 0);
+    x = MARGIN_X + 4;
+
+    if (has_dd && g_cursor_index == 0) {
+        y = LIST_TOP + ITEM_HEIGHT / 2;
+    } else {
+        int sarea_top = has_dd ? (LIST_TOP + ITEM_HEIGHT) : LIST_TOP;
+        int rel = (g_cursor_index - (has_dd ? 1 : 0)) * ITEM_HEIGHT;
+        y = sarea_top + rel - (int)g_scroll_offset + ITEM_HEIGHT / 2;
+    }
+
+    filepicker_touch_down(x, y);
+    g_cursor_active = 1;  /* touch_down just cleared it; this was a gamepad action */
+    return filepicker_touch_up(x, y);
 }
 
 /* Get selected path */

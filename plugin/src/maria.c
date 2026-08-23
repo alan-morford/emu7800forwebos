@@ -344,18 +344,13 @@ void maria_write(Maria *maria, uint16_t addr, uint8_t data)
                 g_bcntl = (data & 0x08) != 0;
                 g_kangaroo = (data & 0x04) != 0;
                 g_rm = data & 0x03;
-                /* Log CTRL writes for first few frames, or any DMA enable transition */
-                if (g_diag_frames_left > 0 || (!was_dma && g_dma_enabled)) {
+                if (g_diag_frames_left > 0) {
                     char msg[128];
                     snprintf(msg, sizeof(msg),
                         "MARIA CTRL=$%02X dma=%d ck=%d cw=%d bc=%d kang=%d rm=%d sl=%d frm=%d",
                         data, g_dma_enabled, g_color_kill, g_cwidth, g_bcntl, g_kangaroo, g_rm,
                         g_scanline, g_maria_frame_count);
                     log_msg(msg);
-                    if (!was_dma && g_dma_enabled && g_diag_frames_left == 0) {
-                        g_diag_frames_left = DIAG_FRAMES;
-                        log_msg("MARIA DIAG: DMA first enabled, starting diagnostic logging");
-                    }
                 }
             }
             break;

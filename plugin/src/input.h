@@ -41,14 +41,24 @@ int input_select_pressed(void);
 /* Check if back button was pressed (returns 1 once, then clears) */
 int input_back_pressed(void);
 
+/* Gamepad Back button: sets the same one-shot flag TOUCH_BACK does */
+void input_set_back_pressed(void);
+
 /* Check if pause button was pressed (returns 1 once, then clears) */
 int input_pause_pressed(void);
+
+/* Gamepad Start button: sets the same one-shot flag TOUCH_PAUSE does */
+void input_set_pause_pressed(void);
 
 /* Check if save button was pressed (returns 1 once, then clears) */
 int input_save_pressed(void);
 
 /* Check if load button was pressed (returns 1 once, then clears) */
 int input_load_pressed(void);
+
+/* Gamepad LB/RB: sets the same one-shot flags TOUCH_SAVE/TOUCH_LOAD do */
+void input_set_save_pressed(void);
+void input_set_load_pressed(void);
 
 /* Check if zoom button was pressed (returns 1 once, then clears) */
 int input_zoom_pressed(void);
@@ -103,5 +113,8 @@ void input_set_dpad_size(int v);
 /* Paddle control mode: 0=Slider (default), 1=DPad */
 int  input_get_paddle_control_mode(void);
 void input_set_paddle_control_mode(int v);
+
+/* Gamepad integration (see controller.h). Called from main.c's main loop. */
+int  input_gamepad_back_dismiss(void);       /* Back button: dismiss topmost popup if any; returns 1 if consumed */
 
 #endif /* INPUT_H */

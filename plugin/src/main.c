@@ -25,6 +25,7 @@
 #include "video.h"
 #include "audio.h"
 #include "input.h"
+#include "controller.h"
 #include "font.h"
 #include "filepicker.h"
 #include "savestate.h"
@@ -102,15 +103,7 @@ static uint64_t get_time_us(void)
 
 void log_msg(const char *msg)
 {
-    static FILE *logf = NULL;
-    static int log_bytes = 0;
-    if (!logf) {
-        logf = fopen("/media/internal/emu7800.log", "w");
-        if (!logf) return;
-    }
-    if (log_bytes > 2000000) return;
-    log_bytes += fprintf(logf, "%s\n", msg);
-    fflush(logf);
+    (void)msg;
 }
 
 /* Forward declarations */
@@ -195,7 +188,7 @@ int main(int argc, char *argv[])
     int i;
     const char *env_params;
 
-    log_msg("EMU7800 starting... [build: emu7800-v1.8.3]");
+    log_msg("EMU7800 starting... [build: emu7800-v1.8.4]");
 
     /* Log all argv so we can see how webOS passes shortcut params */
     snprintf(logbuf, sizeof(logbuf), "argc=%d", argc);
@@ -249,6 +242,9 @@ int main(int argc, char *argv[])
     /* Initialize machine */
     machine_init();
 
+    /* Wired USB controller support (direct evdev reads -- see controller.h) */
+    controller_init();
+
     /* Initialize file picker and scan for ROMs */
     filepicker_init();
     {
@@ -273,6 +269,7 @@ int main(int argc, char *argv[])
     }
 
     /* Cleanup */
+    controller_shutdown();
     filepicker_shutdown();
     if (device_has_gl()) {
         font_shutdown();
@@ -687,11 +684,72 @@ static void main_loop(void)
                 g_poll_time_max = poll_us;
         }
 
+        /* Wired USB controller: poll once per iteration regardless of state
+         * (cheap no-op with no pad attached; see controller.h). */
+        controller_poll();
+
         if (g_app_state == APP_STATE_FILEPICKER) {
+            /* Gamepad: Up/Down move the highlight cursor, A confirms
+             * (reuses the same touch hit-testing filepicker_touch_up() does),
+             * B mirrors ESC (dismiss a popup, else go up a directory). */
+            if (controller_nav_up_edge())   filepicker_cursor_move(-1);
+            if (controller_nav_down_edge()) filepicker_cursor_move(1);
+            if (controller_a_edge() && filepicker_cursor_confirm()) {
+                launch_selected_rom();
+            }
+            if (controller_b_edge()) {
+                filepicker_key_down(27);
+            }
+
             /* Draw file picker and sleep a bit to avoid burning CPU */
             filepicker_draw();
             usleep(16000); /* ~60fps */
         } else if (g_app_state == APP_STATE_EMULATOR) {
+            /* Gamepad: level-driven d-pad/fire/switches (safe to call every
+             * frame), edge-driven Start (Pause) / Back / LB-RB (Save/Load).
+             * Gated on controller_connected() -- without this, an absent
+             * pad's all-zero level state was overwriting touch/keyboard's
+             * input every single frame (they'd set a bit in process_events(),
+             * then this block would immediately clear it back to 0 before
+             * the frame was ever sampled), breaking touch input entirely
+             * whenever no controller was plugged in. */
+            if (controller_connected()) {
+                int gp_up, gp_down, gp_left, gp_right;
+                controller_dpad(&gp_up, &gp_down, &gp_left, &gp_right);
+
+                if (machine_is_paddle_game()) {
+                    /* L Stick -> Paddle: analog when the pad has a real
+                     * stick axis, else a digital nudge from the d-pad/hat
+                     * (mirrors the existing touch DPad-paddle mode). No
+                     * joystick directions in a paddle game, same as touch. */
+                    if (controller_has_analog_paddle()) {
+                        machine_set_paddle(0, controller_paddle_value());
+                    } else {
+                        if (gp_left)  { int v = machine_get_paddle(0) - 8; machine_set_paddle(0, v < 0 ? 0 : v); }
+                        if (gp_right) { int v = machine_get_paddle(0) + 8; machine_set_paddle(0, v > 255 ? 255 : v); }
+                    }
+                } else {
+                    machine_set_joystick(0, 0, gp_up);
+                    machine_set_joystick(0, 1, gp_down);
+                    machine_set_joystick(0, 2, gp_left);
+                    machine_set_joystick(0, 3, gp_right);
+                }
+
+                machine_set_trigger(0, controller_fire());
+                machine_set_trigger2(0, controller_fire2());
+                machine_set_switch(1, controller_select_switch());  /* LT -> Select */
+                machine_set_switch(0, controller_reset_switch());   /* RT -> Reset */
+
+                if (controller_start_edge() && !g_paused_for_popup) {
+                    input_set_pause_pressed();
+                }
+                if (controller_back_edge() && !input_gamepad_back_dismiss()) {
+                    input_set_back_pressed();
+                }
+                if (controller_save_edge()) input_set_save_pressed();
+                if (controller_load_edge()) input_set_load_pressed();
+            }
+
             /* Check for BACK button */
             if (input_back_pressed()) {
                 if (input_get_autosave() && g_current_rom_path[0]) {
