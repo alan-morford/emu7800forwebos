@@ -63,7 +63,7 @@ NOTE: The Pre3 performance isn't great, however, it is drastically improved with
 
 ## Known Issues
 
-- **Pre3/Veer/Pre2 (webOS 2.2.4) with the OpenSSL-legacyWebOS TLS 1.3 patch installed**:
+- **Pre3 (webOS 2.2.4) with the OpenSSL-legacyWebOS TLS 1.3 patch installed**:
   the app icon does nothing on tap. This affects *every* native PDK app on the device, not
   just EMU7800 — it's a bug in that patch's webOS 2.x build (confirmed on-device: it never
   even reaches the point of spawning a process). Not something this app can work around.
