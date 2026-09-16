@@ -4,12 +4,14 @@
  * Runtime device detection and PDL abstraction.
  * All PDL calls go through dlsym — safe on both webOS 2.x and 3.x.
  *
- * Detection logic:
- *   - If PDL_GetHardwareID returns 601 → TouchPad (GL via SDL)
- *   - Everything else (501, missing PDL, etc.) → Pre3/non-TouchPad (SW only)
- *
- * The TouchPad is the ONLY device where SDL_OPENGL is known to work.
- * All other devices get the safe software rendering path.
+ * Detection logic (PDL_GetHardwareID, confirmed on real hardware):
+ *   - 601 (topaz)  -> HP TouchPad        1024x768, GL
+ *   - 701 (opal)   -> HP TouchPad Go     1024x768, GL  (prototype 7" tablet)
+ *   - 501 (manta)  -> HP Pre3            800x480 logical landscape, SW
+ *   - anything else: fall back on PDL_GetPDKVersion + PDL_GetScreenMetrics.
+ *     A webOS 3.x device reporting a 1024x768-or-larger screen is a
+ *     TouchPad-class tablet and gets the GL path; everything else (webOS 2.x,
+ *     small screen, missing PDL) gets the safe software rendering path.
  *
  * Copyright (c) 2024 EMU7800
  */
@@ -20,6 +22,11 @@
 #include "device.h"
 
 extern void log_msg(const char *msg);
+
+/* PDL_HardwareID values, confirmed by probing the actual hardware */
+#define HWID_PRE3         501   /* mantaray  */
+#define HWID_TOUCHPAD     601   /* topaz     */
+#define HWID_TOUCHPAD_GO  701   /* opal      */
 
 /* Device state */
 static int g_device_type   = DEVICE_PRE3;  /* safe default */
@@ -33,16 +40,45 @@ typedef int  (*PDL_QuitFunc)(void);
 typedef int  (*PDL_ScreenTimeoutFunc)(int);
 typedef int  (*PDL_GetHWIDFunc)(void);
 typedef int  (*PDL_SetTouchFunc)(int);
+typedef int  (*PDL_GetMetricsFunc)(int *, int *);
+typedef int  (*PDL_GetPDKVerFunc)(void);
 
 static PDL_QuitFunc          s_pdl_quit = NULL;
 static PDL_ScreenTimeoutFunc s_pdl_timeout = NULL;
+
+static void select_touchpad(const char *name)
+{
+    char msg[128];
+    g_device_type   = DEVICE_TOUCHPAD;
+    g_screen_width  = 1024;
+    g_screen_height = 768;
+    g_has_gl        = 1;
+    snprintf(msg, sizeof(msg), "DEVICE: %s (1024x768, GL)", name);
+    log_msg(msg);
+}
+
+static void select_pre3(const char *name)
+{
+    char msg[128];
+    /* Logical landscape dimensions (rotated from 480x800 portrait) */
+    g_device_type   = DEVICE_PRE3;
+    g_screen_width  = 800;
+    g_screen_height = 480;
+    g_has_gl        = 0;
+    snprintf(msg, sizeof(msg), "DEVICE: %s (800x480 logical landscape, SW)", name);
+    log_msg(msg);
+}
 
 void device_init(void)
 {
     PDL_InitFunc pdl_init;
     PDL_GetHWIDFunc pdl_gethwid;
     PDL_SetTouchFunc pdl_touch;
+    PDL_GetMetricsFunc pdl_metrics;
+    PDL_GetPDKVerFunc pdl_pdkver;
     int hwid;
+    int pdk_ver = 0;
+    int scr_w = 0, scr_h = 0;
     char msg[128];
 
     /* Resolve PDL_Init */
@@ -66,6 +102,20 @@ void device_init(void)
         log_msg("DEVICE: PDL_SetTouchAggression(1) OK");
     }
 
+    /* PDK version + screen metrics: used to classify devices whose hardware ID
+     * we do not recognize, so a new webOS 3.x tablet is not misfiled as a Pre3. */
+    pdl_pdkver = (PDL_GetPDKVerFunc)dlsym(RTLD_DEFAULT, "PDL_GetPDKVersion");
+    if (pdl_pdkver) {
+        pdk_ver = pdl_pdkver();
+    }
+    pdl_metrics = (PDL_GetMetricsFunc)dlsym(RTLD_DEFAULT, "PDL_GetScreenMetrics");
+    if (pdl_metrics && pdl_metrics(&scr_w, &scr_h) != 0) {
+        scr_w = scr_h = 0;   /* call failed — treat as unknown */
+    }
+    snprintf(msg, sizeof(msg), "DEVICE: PDK version=%d, screen metrics=%dx%d",
+             pdk_ver, scr_w, scr_h);
+    log_msg(msg);
+
     /* Detect device via PDL_GetHardwareID */
     pdl_gethwid = (PDL_GetHWIDFunc)dlsym(RTLD_DEFAULT, "PDL_GetHardwareID");
     if (pdl_gethwid) {
@@ -73,37 +123,30 @@ void device_init(void)
         snprintf(msg, sizeof(msg), "DEVICE: PDL_GetHardwareID=%d", hwid);
         log_msg(msg);
 
-        if (hwid == 601) {
-            /* HP TouchPad — the ONLY device with confirmed SDL+GL support */
-            g_device_type   = DEVICE_TOUCHPAD;
-            g_screen_width  = 1024;
-            g_screen_height = 768;
-            g_has_gl        = 1;
-            log_msg("DEVICE: HP TouchPad (1024x768, GL)");
-        } else if (hwid == 501) {
-            /* Logical landscape dimensions (rotated from 480x800 portrait) */
-            g_device_type   = DEVICE_PRE3;
-            g_screen_width  = 800;
-            g_screen_height = 480;
-            g_has_gl        = 0;
-            log_msg("DEVICE: HP Pre3 (800x480 logical landscape, SW)");
+        if (hwid == HWID_TOUCHPAD) {
+            select_touchpad("HP TouchPad");
+        } else if (hwid == HWID_TOUCHPAD_GO) {
+            /* Prototype 7" TouchPad Go: same panel, same webOS 3.x GL stack */
+            select_touchpad("HP TouchPad Go");
+        } else if (hwid == HWID_PRE3) {
+            select_pre3("HP Pre3");
+        } else if (pdk_ver >= 300 && scr_w >= 1024 && scr_h >= 768) {
+            /* Unknown ID, but a webOS 3.x device with a TouchPad-sized screen —
+             * the GL path is the right one for that class of hardware. */
+            snprintf(msg, sizeof(msg),
+                     "DEVICE: Unknown hwid=%d, webOS 3.x tablet-class", hwid);
+            log_msg(msg);
+            select_touchpad("Unknown TouchPad-class device");
         } else {
-            /* Unknown device — use safe Pre3-like defaults */
             snprintf(msg, sizeof(msg),
                      "DEVICE: Unknown hwid=%d, using Pre3 defaults", hwid);
             log_msg(msg);
-            g_device_type   = DEVICE_PRE3;
-            g_screen_width  = 800;
-            g_screen_height = 480;
-            g_has_gl        = 0;
+            select_pre3("Unknown small device");
         }
     } else {
-        /* No GetHardwareID → older webOS → safe defaults */
-        log_msg("DEVICE: PDL_GetHardwareID not found, using Pre3 defaults (800x480 logical, SW)");
-        g_device_type   = DEVICE_PRE3;
-        g_screen_width  = 800;
-        g_screen_height = 480;
-        g_has_gl        = 0;
+        /* No GetHardwareID -> older webOS -> safe defaults */
+        log_msg("DEVICE: PDL_GetHardwareID not found, using Pre3 defaults");
+        select_pre3("Unknown (no PDL_GetHardwareID)");
     }
 }
 

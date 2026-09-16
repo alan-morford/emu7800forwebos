@@ -59,7 +59,7 @@ NOTE: The Pre3 performance isn't great, however, it is drastically improved with
 - In-game Options menu with all settings accessible during gameplay
 - Update checker — fetches latest version from App Museum II and updates from within the app
 - Bug report link
-- HP TouchPad (1024x768, OpenGL ES 1.1) and HP Pre3 (800x480, software rendering) both supported
+- HP TouchPad and the prototype HP TouchPad Go (1024x768, OpenGL ES 1.1) and HP Pre3 (800x480, software rendering) all supported
 
 ## Known Issues
 
