@@ -46,12 +46,30 @@ static void draw_scanline_overlay(void);
 #define TEX_WIDTH_7800  512
 #define TEX_HEIGHT_7800 256
 
-/* 7800 visible scanlines.
- * START_LINE_7800=12: MARIA's pipeline outputs scanline N's content to framebuffer
- * row N+1 (double-buffered hardware). First visible build is scanline 11 → row 12.
- * Last visible build is scanline 252 → row 253. Read rows 12..253 for 242 lines. */
-#define VISIBLE_7800    242
-#define START_LINE_7800 12
+/* 7800 visible scanlines -- the NTSC TV-visible window, not everything MARIA draws.
+ *
+ * MARIA's pipeline outputs scanline N's content to framebuffer row N+1, and it
+ * builds scanlines 11..252, so the full output occupies rows 12..253 (242 lines).
+ * But a real NTSC set never shows all of that: the first and last ~10 lines are
+ * overscan. ProSystem, an independent 7800 emulator, distinguishes the two
+ * explicitly -- displayArea = rasters 16..258 (what MARIA draws) versus
+ * visibleArea = rasters 26..248 (what a TV shows, 223 lines) -- and the 7800
+ * hardware docs agree that the display area starts at raster 16.
+ *
+ * We previously showed all 242 lines, which squeezed ~10 lines of overscan into
+ * the top of the picture and compressed everything else to fit the same screen
+ * rectangle: content sat too high and slightly squashed. Cropping to the
+ * TV-visible window matches ProSystem and real hardware framing.
+ *
+ * Mapping: ProSystem raster S corresponds to our framebuffer row S-5 (we begin
+ * MARIA DMA at scanline 11 where ProSystem begins at 16), so its visible band
+ * 26..248 is our rows 21..243. We start one row later, at 22, so that row 22
+ * holds the content MARIA built on the first TV-visible scanline.
+ *
+ * Verified against all 74 7800 ROMs: only 5 have any non-uniform content in the
+ * removed rows, and never more than a few lines of overscan. */
+#define VISIBLE_7800    223
+#define START_LINE_7800 22
 
 /* MAX_VISIBLE_LINES removed — active height is now dynamic via tia_get_active_height() */
 
@@ -487,8 +505,9 @@ int video_get_maria_palette(void)
 const char *video_get_palette_label(void)
 {
     switch (g_maria_palette_index) {
-        case MARIA_PALETTE_COOL: return "COOL";
-        case MARIA_PALETTE_HOT:  return "HOT";
+        case MARIA_PALETTE_COOL:    return "COOL";
+        case MARIA_PALETTE_HOT:     return "HOT";
+        case MARIA_PALETTE_EMU7800: return "EMU7800";
         default:                 return "WARM";
     }
 }

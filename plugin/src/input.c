@@ -2090,7 +2090,7 @@ static void input_popup_handle_touch(int x, int y)
                     video_cycle_scanlines();
                     break;
                 case 7: /* Palette cycle */
-                    video_set_maria_palette((video_get_maria_palette() + 1) % 3);
+                    video_set_maria_palette((video_get_maria_palette() + 1) % MARIA_PALETTE_COUNT);
                     break;
                 case 8: /* Bug Report email */
                     g_options_popup_visible = 0;

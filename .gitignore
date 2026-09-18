@@ -11,6 +11,9 @@ plugin/emu7800_launcher.arm
 # Packaged IPK files
 *.ipk
 
+# Headless verification harness binary (source is tracked, build with `make test`)
+plugin/test/headless
+
 # ROM files
 *.a26
 *.a78

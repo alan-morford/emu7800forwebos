@@ -37,7 +37,7 @@ NOTE: The Pre3 performance isn't great, however, it is drastically improved with
 ### Display
 - Multiple video modes: Original Aspect Ratio, 2X, 3X integer scaling (TouchPad), and Fullscreen
 - Scanline overlay: Off, Light, Medium, Dark
-- 7800 color palette selection: Cool, Warm, Hot (Trebor A7800 NTSC LCD variants)
+- 7800 color palette selection: Cool, Warm, Hot (Trebor A7800 NTSC LCD variants) and EMU7800 (the upstream EMU7800 palette — more saturated)
 
 ### File Management
 - Built-in file picker for browsing and launching ROMs (.a26, .a78, .bin, .zip)

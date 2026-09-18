@@ -188,7 +188,7 @@ int main(int argc, char *argv[])
     int i;
     const char *env_params;
 
-    log_msg("EMU7800 starting... [build: emu7800-v1.8.5]");
+    log_msg("EMU7800 starting... [build: emu7800-v1.8.6]");
 
     /* Log all argv so we can see how webOS passes shortcut params */
     snprintf(logbuf, sizeof(logbuf), "argc=%d", argc);

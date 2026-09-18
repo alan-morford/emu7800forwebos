@@ -81,6 +81,41 @@ host: $(SOURCES)
 check:
 	$(HOST_CC) $(HOST_CFLAGS) -fsyntax-only $(SOURCES)
 
+# Headless verification harness (see test/README.md).
+# Links only the emulation core -- no SDL, no GL, no PDL -- so the exact code
+# that runs on the device can be executed and diffed on the host.
+CORE_SOURCES = \
+	src/m6502.c \
+	src/tia.c \
+	src/tiasound.c \
+	src/pia.c \
+	src/cart.c \
+	src/machine.c \
+	src/maria.c \
+	src/pokeysound.c \
+	src/zip_load.c \
+	src/puff.c
+
+test/headless: test/headless.c $(CORE_SOURCES)
+	$(HOST_CC) -O1 -g -Wall -Wno-unused-variable -Wno-parentheses \
+		-Wno-unused-function $(HOST_INCLUDES) -o $@ $^ -lm
+
+test: test/headless
+
+# Regenerate the ROM properties table from EMU7800's upstream CSV.
+# ROMPROPS must point at src/assets/ROMProperties.csv in an EMU7800 checkout.
+ROMPROPS ?= $(HOME)/Projects/emu7800/emu7800.github.io-5.7.0.0/src/assets/ROMProperties.csv
+
+romdb:
+	python3 tools/gen_romdb.py $(ROMPROPS) > src/rom_db.h
+
+# Regenerate the per-cart quirk table from ProSystem's Database.c.
+# PSDB must point at core/Database.c in a ProSystem (or prosystem-libretro) checkout.
+PSDB ?= $(HOME)/src/prosystem-libretro/core/Database.c
+
+quirkdb:
+	python3 tools/gen_quirkdb.py $(PSDB) > src/quirk_db.h
+
 # Pre3 diagnostic hello world (minimal: SDL + dlsym, no GL, no PDL link)
 HELLO_SRC = src/hello_pre3.c
 HELLO_TARGET = hello.arm
@@ -105,4 +140,4 @@ stub: $(STUB_SRC)
 clean-stub:
 	rm -f $(STUB_TARGET)
 
-.PHONY: all clean host check hello stub clean-stub
+.PHONY: all clean host check test romdb quirkdb hello stub clean-stub
